@@ -395,6 +395,97 @@ def get_house_data():
             _house_cache["ts"]   = now
         return _house_cache["data"]
 
+# ── 技術分析圖表資料 ──────────────────────────────────────────────────────────────
+_chart_cache: dict = {}
+_chart_cache_lock = threading.Lock()
+CHART_CACHE_SECONDS = 600  # 10 分鐘快取
+
+def calc_ma(prices, n):
+    result = []
+    for i in range(len(prices)):
+        if i < n - 1:
+            result.append(None)
+        else:
+            result.append(round(sum(prices[i-n+1:i+1]) / n, 2))
+    return result
+
+def calc_rsi(prices, period=14):
+    result = [None] * len(prices)
+    if len(prices) <= period:
+        return result
+    gains, losses = [], []
+    for i in range(1, len(prices)):
+        diff = prices[i] - prices[i-1]
+        gains.append(max(diff, 0))
+        losses.append(max(-diff, 0))
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    if avg_loss == 0:
+        result[period] = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        result[period] = round(100 - 100 / (1 + rs), 2)
+    for i in range(period + 1, len(prices)):
+        g = prices[i] - prices[i-1]
+        avg_gain = (avg_gain * (period-1) + max(g, 0)) / period
+        avg_loss = (avg_loss * (period-1) + max(-g, 0)) / period
+        if avg_loss == 0:
+            result[i] = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            result[i] = round(100 - 100 / (1 + rs), 2)
+    return result
+
+def fetch_chart_data(ticker):
+    try:
+        df = yf.Ticker(ticker).history(period="6mo", interval="1d", auto_adjust=True)
+        if df.empty:
+            return None
+        dates = [d.strftime("%Y-%m-%d") for d in df.index]
+        opens  = [round(float(v), 2) for v in df["Open"]]
+        highs  = [round(float(v), 2) for v in df["High"]]
+        lows   = [round(float(v), 2) for v in df["Low"]]
+        closes = [round(float(v), 2) for v in df["Close"]]
+        vols   = [int(v) for v in df["Volume"]]
+
+        candles = [{"time": dates[i], "open": opens[i], "high": highs[i],
+                    "low": lows[i], "close": closes[i]} for i in range(len(dates))]
+        volumes = [{"time": dates[i], "value": vols[i],
+                    "color": "#26a69a" if closes[i] >= opens[i] else "#ef5350"}
+                   for i in range(len(dates))]
+
+        ma5_raw  = calc_ma(closes, 5)
+        ma20_raw = calc_ma(closes, 20)
+        ma60_raw = calc_ma(closes, 60)
+        rsi_raw  = calc_rsi(closes, 14)
+
+        def to_series(raw):
+            return [{"time": dates[i], "value": raw[i]}
+                    for i in range(len(dates)) if raw[i] is not None]
+
+        return {
+            "ticker":  ticker,
+            "candles": candles,
+            "volumes": volumes,
+            "ma5":     to_series(ma5_raw),
+            "ma20":    to_series(ma20_raw),
+            "ma60":    to_series(ma60_raw),
+            "rsi":     to_series(rsi_raw),
+        }
+    except Exception as e:
+        print(f"[Chart] {ticker} 錯誤: {e}", flush=True)
+        return None
+
+def get_chart_data(ticker):
+    now = time.time()
+    with _chart_cache_lock:
+        cached = _chart_cache.get(ticker)
+        if cached and now - cached["ts"] < CHART_CACHE_SECONDS:
+            return cached["data"]
+        data = fetch_chart_data(ticker)
+        _chart_cache[ticker] = {"data": data, "ts": now}
+        return data
+
 # ── 資料聚合 ────────────────────────────────────────────────────────────────────
 def get_all_data():
     now = time.time()
@@ -437,6 +528,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>每日股市 Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -573,6 +665,48 @@ tr:hover td { background: #1d2338; }
 .badge-link   { background: #1a3a2a; color: #4ade80; }
 .cal-link { font-size: .65rem; color: #475569; text-decoration: none; display: block; margin-top: 3px; }
 .cal-link:hover { color: #60a5fa; }
+/* ── 技術分析 Modal ────────────────────────────────────────────── */
+.chart-modal-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.75);
+  z-index:1000; align-items:center; justify-content:center;
+}
+.chart-modal-overlay.open { display:flex; }
+.chart-modal {
+  background:#131722; border:1px solid #2d3748; border-radius:12px;
+  width:min(960px,96vw); max-height:90vh; overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.chart-modal-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 20px; border-bottom:1px solid #2d3748;
+}
+.chart-modal-title { font-size:1rem; font-weight:700; color:#f8fafc; }
+.chart-modal-close {
+  background:none; border:none; color:#94a3b8; font-size:1.4rem;
+  cursor:pointer; padding:2px 8px; border-radius:6px;
+}
+.chart-modal-close:hover { background:#2d3748; color:#f8fafc; }
+.chart-modal-body { padding:12px 16px 16px; overflow-y:auto; }
+.chart-period-btns { display:flex; gap:6px; margin-bottom:10px; }
+.chart-period-btn {
+  padding:4px 12px; border-radius:6px; border:1px solid #374151;
+  background:transparent; color:#94a3b8; font-size:.8rem; cursor:pointer;
+}
+.chart-period-btn.active, .chart-period-btn:hover {
+  background:#2563eb; color:#fff; border-color:#2563eb;
+}
+.chart-legend {
+  display:flex; gap:14px; flex-wrap:wrap; font-size:.75rem; margin-bottom:8px;
+}
+.chart-legend span { display:flex; align-items:center; gap:5px; }
+.chart-legend i { display:inline-block; width:24px; height:3px; border-radius:2px; }
+#chart-container { height:340px; }
+#rsi-container   { height:120px; margin-top:8px; }
+.rsi-label {
+  font-size:.72rem; color:#64748b; margin-bottom:3px; margin-top:6px;
+}
+.name-link { cursor:pointer; }
+.name-link:hover { text-decoration:underline; color:#60a5fa; }
 </style>
 </head>
 <body>
@@ -604,6 +738,26 @@ tr:hover td { background: #1d2338; }
   </div>
   <div class="house-grid" id="house-grid">
     <div class="loading">⏳ 載入房價資料中…</div>
+  </div>
+</div>
+
+<!-- 技術分析 Modal -->
+<div class="chart-modal-overlay" id="chart-overlay" onclick="if(event.target===this)closeChart()">
+  <div class="chart-modal">
+    <div class="chart-modal-header">
+      <div class="chart-modal-title" id="chart-title">技術分析</div>
+      <button class="chart-modal-close" onclick="closeChart()">✕</button>
+    </div>
+    <div class="chart-modal-body">
+      <div class="chart-legend">
+        <span><i style="background:#26a69a"></i>MA5</span>
+        <span><i style="background:#f59e0b"></i>MA20</span>
+        <span><i style="background:#a78bfa"></i>MA60</span>
+      </div>
+      <div id="chart-container"></div>
+      <div class="rsi-label">RSI(14) — 超買 &gt;70（紅線）、超賣 &lt;30（綠線）</div>
+      <div id="rsi-container"></div>
+    </div>
   </div>
 </div>
 
@@ -652,7 +806,7 @@ function render(data){
       const c = cls(q.change), cu = CUR[q.currency]||"";
       const note = ai[q.name]||"";
       html += `<tr>
-<td class="name">${q.name}${note?`<div class="note">💬 ${note}</div>`:""}</td>
+<td class="name"><span class="name-link" onclick="openChart('${q.ticker}','${q.name}')">${q.name}</span>${note?`<div class="note">💬 ${note}</div>`:""}</td>
 <td class="price">${q.error?"--":cu+fmt(q.price)}</td>
 <td class="${c}">${q.error?"--":arr(q.change)+" "+sgn(q.change)+fmt(q.change)}</td>
 <td class="${c}">${q.error?"--":sgn(q.change_pct)+fmt(q.change_pct)+"%"}</td>
@@ -806,6 +960,69 @@ async function loadCal(){
   catch{ document.getElementById("cal-grid").innerHTML=`<div class="loading">⚠️ 行事曆載入失敗</div>`; }
 }
 
+// ── 技術分析圖表 ─────────────────────────────────────────────────
+let _chartMain = null, _chartRsi = null;
+
+function closeChart(){
+  document.getElementById("chart-overlay").classList.remove("open");
+  if(_chartMain){ _chartMain.remove(); _chartMain=null; }
+  if(_chartRsi) { _chartRsi.remove();  _chartRsi=null; }
+}
+
+async function openChart(ticker, name){
+  document.getElementById("chart-title").textContent = `📈 ${name} — 技術分析`;
+  document.getElementById("chart-overlay").classList.add("open");
+  document.getElementById("chart-container").innerHTML = '<div class="loading">⏳ 載入圖表中…</div>';
+  document.getElementById("rsi-container").innerHTML   = "";
+
+  let d;
+  try{ d = await (await fetch(`/chart-data?ticker=${encodeURIComponent(ticker)}`)).json(); }
+  catch{ document.getElementById("chart-container").innerHTML='<div class="loading">⚠️ 圖表載入失敗</div>'; return; }
+  if(!d||!d.candles||!d.candles.length){
+    document.getElementById("chart-container").innerHTML='<div class="loading">⚠️ 無圖表資料</div>'; return;
+  }
+
+  // lightweight-charts v4
+  document.getElementById("chart-container").innerHTML="";
+  document.getElementById("rsi-container").innerHTML="";
+
+  const LW = window.LightweightCharts;
+  const chartOpt = {
+    layout:{ background:{color:"#131722"}, textColor:"#d1d5db" },
+    grid:  { vertLines:{color:"#1f2937"}, horzLines:{color:"#1f2937"} },
+    timeScale:{ borderColor:"#374151", timeVisible:true },
+    rightPriceScale:{ borderColor:"#374151" },
+    crosshair:{ mode:1 },
+  };
+
+  // 主圖：K線 + MA + 成交量
+  _chartMain = LW.createChart(document.getElementById("chart-container"), {...chartOpt, height:340});
+  const candle = _chartMain.addCandlestickSeries({ upColor:"#26a69a", downColor:"#ef5350", borderVisible:false, wickUpColor:"#26a69a", wickDownColor:"#ef5350" });
+  candle.setData(d.candles);
+
+  const vol = _chartMain.addHistogramSeries({ priceFormat:{type:"volume"}, priceScaleId:"vol", scaleMargins:{top:0.8,bottom:0} });
+  vol.setData(d.volumes||[]);
+
+  if(d.ma5.length)  { const s=_chartMain.addLineSeries({color:"#26a69a",lineWidth:1,priceLineVisible:false}); s.setData(d.ma5); }
+  if(d.ma20.length) { const s=_chartMain.addLineSeries({color:"#f59e0b",lineWidth:1,priceLineVisible:false}); s.setData(d.ma20); }
+  if(d.ma60.length) { const s=_chartMain.addLineSeries({color:"#a78bfa",lineWidth:1.5,priceLineVisible:false}); s.setData(d.ma60); }
+
+  _chartMain.timeScale().fitContent();
+
+  // RSI 圖
+  if(d.rsi&&d.rsi.length){
+    _chartRsi = LW.createChart(document.getElementById("rsi-container"), {...chartOpt, height:120});
+    const rsiSeries = _chartRsi.addLineSeries({color:"#60a5fa",lineWidth:1.5,priceLineVisible:false});
+    rsiSeries.setData(d.rsi);
+    // 超買70 / 超賣30 參考線
+    const ob = _chartRsi.addLineSeries({color:"#ef5350",lineWidth:1,lineStyle:2,priceLineVisible:false});
+    ob.setData(d.rsi.map(p=>({time:p.time,value:70})));
+    const os = _chartRsi.addLineSeries({color:"#22c55e",lineWidth:1,lineStyle:2,priceLineVisible:false});
+    os.setData(d.rsi.map(p=>({time:p.time,value:30})));
+    _chartRsi.timeScale().fitContent();
+  }
+}
+
 load(); loadHouse(); loadCal(); tick();
 </script>
 </body>
@@ -863,6 +1080,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type","text/plain")
             self.end_headers(); self.wfile.write(b"ok")
+        elif self.path.startswith("/chart-data?"):
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            ticker = qs.get("ticker", [""])[0].strip()
+            if ticker:
+                payload = json.dumps(get_chart_data(ticker) or {}).encode()
+            else:
+                payload = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
         else:
             self.send_response(404); self.end_headers()
 
