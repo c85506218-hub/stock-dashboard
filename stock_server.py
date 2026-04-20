@@ -833,6 +833,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/house-debug":
+            # 診斷端點：測試政府 ZIP 下載
+            try:
+                r = requests.get(HOUSE_DATA_URL, timeout=30, stream=False,
+                                 headers={"User-Agent": "Mozilla/5.0"})
+                info = {
+                    "status_code": r.status_code,
+                    "content_type": r.headers.get("Content-Type",""),
+                    "content_length": len(r.content),
+                    "first_bytes_hex": r.content[:16].hex(),
+                    "is_zip": r.content[:2] == b'PK',
+                    "error": None
+                }
+            except Exception as e:
+                info = {"error": str(e)}
+            payload = json.dumps(info, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.end_headers(); self.wfile.write(payload)
         elif self.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type","text/plain")
