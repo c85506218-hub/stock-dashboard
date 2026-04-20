@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: stock-dashboard
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python stock_server.py
+    healthCheckPath: /health
