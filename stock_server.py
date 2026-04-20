@@ -87,9 +87,16 @@ WATCHLIST = [
     # ── 美股個股 ──────────────────────────────────────────────────
     ("TSM",     "TSM (台積電ADR)",         "美股個股", "USD"),
     ("NVDA",    "NVDA (Nvidia)",           "美股個股", "USD"),
+    ("AMD",     "AMD (超微半導體)",         "美股個股", "USD"),
     ("AAPL",    "AAPL (Apple)",            "美股個股", "USD"),
-    ("TSLA",    "TSLA (Tesla)",            "美股個股", "USD"),
     ("MSFT",    "MSFT (Microsoft)",        "美股個股", "USD"),
+    ("GOOG",    "GOOG (Alphabet)",         "美股個股", "USD"),
+    ("AMZN",    "AMZN (Amazon)",           "美股個股", "USD"),
+    ("TSLA",    "TSLA (Tesla)",            "美股個股", "USD"),
+    ("COST",    "COST (Costco)",           "美股個股", "USD"),
+    ("GEV",     "GEV (GE Vernova)",        "美股個股", "USD"),
+    ("MRNA",    "MRNA (Moderna)",          "美股個股", "USD"),
+    ("COIN",    "COIN (Coinbase)",         "美股個股", "USD"),
     ("UMAC",    "UMAC (Unusual Machines)", "美股個股", "USD"),
 ]
 
