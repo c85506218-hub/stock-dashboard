@@ -818,15 +818,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type","text/plain")
+            self.end_headers(); self.wfile.write(b"ok")
         else:
             self.send_response(404); self.end_headers()
 
 def main():
+    print(f"🚀  Starting server on port {PORT} ...")
     server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"✅  股市 Dashboard 已啟動")
-    print(f"👉  請用瀏覽器開啟：http://localhost:{PORT}")
-    print(f"    資料來源：Yahoo Finance（公開資料，無需帳號）")
-    print(f"    （按 Ctrl+C 停止伺服器）\n")
+    print(f"✅  股市 Dashboard 已啟動，PORT={PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
