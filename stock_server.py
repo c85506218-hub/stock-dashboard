@@ -148,6 +148,7 @@ def fetch_house_prices():
     try:
         print("[房價] 開始下載 ZIP...", flush=True)
         r = requests.get(HOUSE_DATA_URL, timeout=120, stream=True,
+                         verify=False,
                          headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         # 串流寫入暫存檔，避免記憶體溢出
@@ -837,6 +838,7 @@ class Handler(BaseHTTPRequestHandler):
             # 診斷端點：測試政府 ZIP 下載
             try:
                 r = requests.get(HOUSE_DATA_URL, timeout=30, stream=False,
+                                 verify=False,
                                  headers={"User-Agent": "Mozilla/5.0"})
                 info = {
                     "status_code": r.status_code,
