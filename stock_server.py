@@ -816,7 +816,7 @@ tr:hover td { background: #1d2338; }
 
 <script>
 const REFRESH  = 60;
-const SECTIONS = ["台股大盤","台股個股","美股大盤","美股個股"];
+const SECTIONS = ["台股大盤","台灣ETF","台股個股","美股大盤","美股ETF","美股個股"];
 const CUR      = {NTD:"NT$", USD:"$"};
 let timer = REFRESH;
 
