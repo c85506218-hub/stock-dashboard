@@ -826,13 +826,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
 def main():
-    print(f"🚀  Starting server on port {PORT} ...")
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"✅  股市 Dashboard 已啟動，PORT={PORT}")
+    import sys
+    print(f"Python version: {sys.version}", flush=True)
+    print(f"🚀  Starting server on port {PORT} ...", flush=True)
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), Handler)
+    except Exception as e:
+        print(f"❌  Failed to bind port {PORT}: {e}", flush=True)
+        sys.exit(1)
+    print(f"✅  Server started on 0.0.0.0:{PORT}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n🛑  伺服器已停止。")
+        print("\n🛑  Server stopped.")
 
 if __name__ == "__main__":
     main()
