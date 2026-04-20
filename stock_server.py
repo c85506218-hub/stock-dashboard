@@ -822,7 +822,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
 
 def main():
-    server = HTTPServer(("", PORT), Handler)
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
     print(f"✅  股市 Dashboard 已啟動")
     print(f"👉  請用瀏覽器開啟：http://localhost:{PORT}")
     print(f"    資料來源：Yahoo Finance（公開資料，無需帳號）")
