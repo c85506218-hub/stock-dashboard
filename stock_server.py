@@ -143,16 +143,31 @@ EXCLUDE_NOTES = ["親友", "特殊關係", "員工", "共有人", "非常規", "
 
 def fetch_house_prices():
     """下載內政部實價登錄，回傳台南透天厝分析資料（已過濾異常交易）。"""
+    import tempfile, os as _os
+    tmp_path = None
     try:
-        r = requests.get(HOUSE_DATA_URL, timeout=30,
+        print("[房價] 開始下載 ZIP...", flush=True)
+        r = requests.get(HOUSE_DATA_URL, timeout=120, stream=True,
                          headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
-        z = zipfile.ZipFile(io.BytesIO(r.content))
+        # 串流寫入暫存檔，避免記憶體溢出
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+            tmp_path = tmp.name
+            for chunk in r.iter_content(chunk_size=1024*256):
+                if chunk:
+                    tmp.write(chunk)
+        print(f"[房價] ZIP 下載完成 ({_os.path.getsize(tmp_path)//1024} KB)", flush=True)
+        z = zipfile.ZipFile(tmp_path)
         with z.open(HOUSE_CITY_FILE) as f:
             lines = f.read().decode("utf-8-sig").splitlines()
+        z.close()
     except Exception as e:
-        print(f"[房價] 下載失敗: {e}")
+        print(f"[房價] 下載失敗: {e}", flush=True)
         return None
+    finally:
+        if tmp_path and _os.path.exists(tmp_path):
+            try: _os.unlink(tmp_path)
+            except: pass
 
     headers = lines[0].split(",")
     rows = list(csv.DictReader(lines[2:], fieldnames=headers))
