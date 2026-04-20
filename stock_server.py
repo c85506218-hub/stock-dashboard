@@ -16,6 +16,11 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """多執行緒 HTTP 伺服器，避免長時間請求（如下載房價 ZIP）卡住其他請求。"""
+    daemon_threads = True
 
 import requests
 import yfinance as yf
@@ -866,7 +871,7 @@ def main():
     print(f"Python version: {sys.version}", flush=True)
     print(f"🚀  Starting server on port {PORT} ...", flush=True)
     try:
-        server = HTTPServer(("0.0.0.0", PORT), Handler)
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     except Exception as e:
         print(f"❌  Failed to bind port {PORT}: {e}", flush=True)
         sys.exit(1)
