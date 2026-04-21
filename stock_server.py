@@ -888,6 +888,7 @@ function timeAgo(iso){
 }
 
 function render(data){
+  try{
   document.getElementById("ai-text").textContent = (data.commentary||{}).market_summary||"";
   const ai    = (data.commentary||{}).stocks||{};
   const news  = data.news||{};
@@ -939,6 +940,10 @@ function render(data){
   document.getElementById("grid").innerHTML = html;
   document.getElementById("updated").textContent =
     "更新："+new Date().toLocaleString("zh-TW",{hour12:false});
+  }catch(e){
+    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ render錯誤: ${e.message}<br><small>${(e.stack||'').split('\\n').slice(0,3).join(' | ')}</small></div>`;
+    throw e;
+  }
 }
 
 function renderHouse(h){
