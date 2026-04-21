@@ -6,6 +6,7 @@
 """
 
 import csv
+import math
 import os
 import io
 import json
@@ -26,6 +27,22 @@ import requests
 import yfinance as yf
 
 PORT = int(os.environ.get("PORT", 8888))
+
+# NaN/Inf 不是合法 JSON，用此 encoder 全部轉成 null
+class SafeEncoder(json.JSONEncoder):
+    def iterencode(self, o, _one_shot=False):
+        return super().iterencode(self._sanitize(o), _one_shot)
+    def _sanitize(self, o):
+        if isinstance(o, float):
+            return None if (math.isnan(o) or math.isinf(o)) else o
+        if isinstance(o, dict):
+            return {k: self._sanitize(v) for k, v in o.items()}
+        if isinstance(o, (list, tuple)):
+            return [self._sanitize(v) for v in o]
+        return o
+
+def safe_json(obj):
+    return json.dumps(obj, cls=SafeEncoder)
 DATA_CACHE_SECONDS  = 60           # 股價快取 60 秒
 HOUSE_CACHE_SECONDS = 3600 * 6     # 房價快取 6 小時（內政部每月更新3次）
 PING = 3.3058                      # 1 坪 = 3.3058 平方公尺
@@ -165,17 +182,22 @@ def build_commentary(quotes):
 
 # ── 抓取股價 ────────────────────────────────────────────────────────────────────
 def fetch_quote(ticker, name, section, currency):
+    import math
     try:
         info  = yf.Ticker(ticker).fast_info
         price = info.last_price
         prev  = info.previous_close
         if price is None or prev is None:
-            raise ValueError
+            raise ValueError("null price")
+        if math.isnan(price) or math.isnan(prev) or prev == 0:
+            raise ValueError("nan/zero price")
         change     = price - prev
         change_pct = change / prev * 100
+        rp = round(price, 2); rc = round(change, 2); rpc = round(change_pct, 2)
+        if math.isnan(rp) or math.isnan(rc) or math.isnan(rpc):
+            raise ValueError("nan after round")
         return dict(ticker=ticker, name=name, section=section, currency=currency,
-                    price=round(price, 2), change=round(change, 2),
-                    change_pct=round(change_pct, 2), error=False)
+                    price=rp, change=rc, change_pct=rpc, error=False)
     except Exception:
         return dict(ticker=ticker, name=name, section=section, currency=currency,
                     price=0, change=0, change_pct=0, error=True)
@@ -1168,25 +1190,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control","no-cache, no-store, must-revalidate")
             self.end_headers(); self.wfile.write(body)
         elif self.path == "/data":
-            payload = json.dumps(get_quotes_data()).encode()
+            payload = safe_json(get_quotes_data()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/news":
-            payload = json.dumps(get_news_only()).encode()
+            payload = safe_json(get_news_only()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/calendar":
-            payload = json.dumps(get_calendar()).encode()
+            payload = safe_json(get_calendar()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/house":
-            payload = json.dumps(get_house_data()).encode()
+            payload = safe_json(get_house_data()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
