@@ -551,16 +551,24 @@ def get_chart_data(ticker):
         _chart_cache[ticker] = {"data": data, "ts": now}
         return data
 
-# ── 資料聚合 ────────────────────────────────────────────────────────────────────
-NEWS_CACHE_SECONDS = 600  # 新聞快取 10 分鐘（獨立於股價）
+# ── 資料聚合（lock 只保護快取讀寫，不鎖住網路請求）────────────────────────────
+NEWS_CACHE_SECONDS = 900  # 新聞快取 15 分鐘
 _news_cache: dict = {"data": {}, "ts": 0}
+_fetching_quotes = False
+_fetching_news   = False
 
 def get_quotes_only():
-    """只抓股價（快，約 3-5 秒），不含新聞。"""
+    global _fetching_quotes
     now = time.time()
     with _cache_lock:
-        if now - _data_cache["ts"] < DATA_CACHE_SECONDS:
-            return _data_cache["quotes"]
+        if _data_cache["quotes"] and now - _data_cache["ts"] < DATA_CACHE_SECONDS:
+            return _data_cache["quotes"]          # 快取有效，直接回傳
+        stale = _data_cache["quotes"]             # 舊資料（可能是空 list）
+        if _fetching_quotes:
+            return stale                          # 已有別的 thread 在抓，回傳舊值
+        _fetching_quotes = True
+
+    try:
         quotes = []
         with ThreadPoolExecutor(max_workers=30) as ex:
             futs = {ex.submit(fetch_quote, *row): row[0] for row in WATCHLIST}
@@ -568,42 +576,43 @@ def get_quotes_only():
                 quotes.append(f.result())
         order = [row[0] for row in WATCHLIST]
         quotes.sort(key=lambda q: order.index(q["ticker"]))
-        _data_cache["quotes"] = quotes
-        _data_cache["ts"] = now
+        with _cache_lock:
+            _data_cache["quotes"] = quotes
+            _data_cache["ts"] = now
         return quotes
+    finally:
+        _fetching_quotes = False
 
 def get_news_only():
-    """只抓新聞（慢，約 10-20 秒），獨立快取。"""
+    global _fetching_news
     now = time.time()
     with _cache_lock:
-        if now - _news_cache["ts"] < NEWS_CACHE_SECONDS:
+        if _news_cache["data"] and now - _news_cache["ts"] < NEWS_CACHE_SECONDS:
             return _news_cache["data"]
+        stale = _news_cache["data"]
+        if _fetching_news:
+            return stale
+        _fetching_news = True
+
+    try:
         news = {}
         with ThreadPoolExecutor(max_workers=30) as ex:
             futs = {ex.submit(fetch_news, row[0]): row[0] for row in WATCHLIST}
             for f in as_completed(futs):
                 news[futs[f]] = f.result()
-        _news_cache["data"] = news
-        _news_cache["ts"] = now
+        with _cache_lock:
+            _news_cache["data"] = news
+            _news_cache["ts"] = now
         return news
-
-def get_all_data():
-    quotes = get_quotes_only()
-    news   = get_news_only()
-    return {
-        "updated":    datetime.now().isoformat(),
-        "quotes":     quotes,
-        "news":       news,
-        "commentary": build_commentary(quotes),
-    }
+    finally:
+        _fetching_news = False
 
 def get_quotes_data():
-    """只回傳股價（給前端快速顯示用）。"""
     quotes = get_quotes_only()
     return {
         "updated":    datetime.now().isoformat(),
         "quotes":     quotes,
-        "news":       _news_cache["data"],   # 用舊新聞快取（可能空）
+        "news":       _news_cache["data"],
         "commentary": build_commentary(quotes),
     }
 
@@ -980,7 +989,6 @@ async function loadHouse(){
 }
 
 async function load(){
-  // 第一步：先快速載入股價（3-5秒）
   try{
     const d = await (await fetch("/data")).json();
     render(d);
@@ -988,13 +996,13 @@ async function load(){
     document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後</div>`;
     return;
   }
-  // 第二步：背景補載新聞（10-20秒），載完自動更新
+  // 背景補載新聞，載完只更新新聞區塊不重抓股價
   try{
     const news = await (await fetch("/news")).json();
-    const d2 = await (await fetch("/data")).json();
-    d2.news = news;
-    render(d2);
-  } catch{ /* 新聞載入失敗不影響股價顯示 */ }
+    const cached = await (await fetch("/data")).json();  // 此時已有快取，瞬間回傳
+    cached.news = news;
+    render(cached);
+  } catch{ }
 }
 
 function tick(){
@@ -1210,6 +1218,14 @@ def main():
         print(f"❌  Failed to bind port {PORT}: {e}", flush=True)
         sys.exit(1)
     print(f"✅  Server started on 0.0.0.0:{PORT}", flush=True)
+    # 啟動時預先暖機快取（背景執行，不阻擋伺服器啟動）
+    def warmup():
+        print("🔄  預熱股價快取...", flush=True)
+        get_quotes_only()
+        print("✅  股價快取完成", flush=True)
+        get_news_only()
+        print("✅  新聞快取完成", flush=True)
+    threading.Thread(target=warmup, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
