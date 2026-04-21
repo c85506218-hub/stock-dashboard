@@ -551,70 +551,83 @@ def get_chart_data(ticker):
         _chart_cache[ticker] = {"data": data, "ts": now}
         return data
 
-# ── 資料聚合（lock 只保護快取讀寫，不鎖住網路請求）────────────────────────────
-NEWS_CACHE_SECONDS = 900  # 新聞快取 15 分鐘
-_news_cache: dict = {"data": {}, "ts": 0}
-_fetching_quotes = False
-_fetching_news   = False
+# ── 背景定期更新（HTTP 請求永遠瞬間回傳快取，不等待網路）────────────────────────
+NEWS_CACHE_SECONDS = 900
+_bg_cache = {
+    "quotes":    [],
+    "news":      {},
+    "updated":   "",
+    "ready":     False,   # 第一次抓完才設為 True
+}
+_bg_lock = threading.Lock()
 
-def get_quotes_only():
-    global _fetching_quotes
-    now = time.time()
-    with _cache_lock:
-        if _data_cache["quotes"] and now - _data_cache["ts"] < DATA_CACHE_SECONDS:
-            return _data_cache["quotes"]          # 快取有效，直接回傳
-        stale = _data_cache["quotes"]             # 舊資料（可能是空 list）
-        if _fetching_quotes:
-            return stale                          # 已有別的 thread 在抓，回傳舊值
-        _fetching_quotes = True
-
+def _refresh_quotes():
+    """抓最新股價，更新快取。"""
+    quotes = []
     try:
-        quotes = []
         with ThreadPoolExecutor(max_workers=30) as ex:
             futs = {ex.submit(fetch_quote, *row): row[0] for row in WATCHLIST}
             for f in as_completed(futs):
                 quotes.append(f.result())
         order = [row[0] for row in WATCHLIST]
         quotes.sort(key=lambda q: order.index(q["ticker"]))
-        with _cache_lock:
-            _data_cache["quotes"] = quotes
-            _data_cache["ts"] = now
-        return quotes
-    finally:
-        _fetching_quotes = False
+        with _bg_lock:
+            _bg_cache["quotes"]  = quotes
+            _bg_cache["updated"] = datetime.now().isoformat()
+            _bg_cache["ready"]   = True
+    except Exception as e:
+        print(f"[BG] quotes 更新失敗: {e}", flush=True)
 
-def get_news_only():
-    global _fetching_news
-    now = time.time()
-    with _cache_lock:
-        if _news_cache["data"] and now - _news_cache["ts"] < NEWS_CACHE_SECONDS:
-            return _news_cache["data"]
-        stale = _news_cache["data"]
-        if _fetching_news:
-            return stale
-        _fetching_news = True
-
+def _refresh_news():
+    """抓最新新聞，更新快取。"""
+    news = {}
     try:
-        news = {}
         with ThreadPoolExecutor(max_workers=30) as ex:
             futs = {ex.submit(fetch_news, row[0]): row[0] for row in WATCHLIST}
             for f in as_completed(futs):
                 news[futs[f]] = f.result()
-        with _cache_lock:
-            _news_cache["data"] = news
-            _news_cache["ts"] = now
-        return news
-    finally:
-        _fetching_news = False
+        with _bg_lock:
+            _bg_cache["news"] = news
+    except Exception as e:
+        print(f"[BG] news 更新失敗: {e}", flush=True)
+
+def _background_loop():
+    """每隔 60 秒更新股價，每隔 900 秒更新新聞。"""
+    last_news_refresh = 0
+    while True:
+        print("[BG] 更新股價...", flush=True)
+        _refresh_quotes()
+        print("[BG] 股價更新完成", flush=True)
+        now = time.time()
+        if now - last_news_refresh > NEWS_CACHE_SECONDS:
+            print("[BG] 更新新聞...", flush=True)
+            _refresh_news()
+            print("[BG] 新聞更新完成", flush=True)
+            last_news_refresh = time.time()
+        time.sleep(DATA_CACHE_SECONDS)
 
 def get_quotes_data():
-    quotes = get_quotes_only()
+    """永遠瞬間回傳（從背景快取）。"""
+    with _bg_lock:
+        quotes = _bg_cache["quotes"]
+        news   = _bg_cache["news"]
+        ready  = _bg_cache["ready"]
+        updated = _bg_cache["updated"]
+    if not ready:
+        return {"updated": datetime.now().isoformat(), "quotes": [],
+                "news": {}, "commentary": {"market_summary": "資料載入中，請稍候…", "stocks": {}},
+                "loading": True}
     return {
-        "updated":    datetime.now().isoformat(),
+        "updated":    updated,
         "quotes":     quotes,
-        "news":       _news_cache["data"],
+        "news":       news,
         "commentary": build_commentary(quotes),
+        "loading":    False,
     }
+
+def get_news_only():
+    with _bg_lock:
+        return _bg_cache["news"]
 
 # ── HTML ────────────────────────────────────────────────────────────────────────
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -1218,14 +1231,9 @@ def main():
         print(f"❌  Failed to bind port {PORT}: {e}", flush=True)
         sys.exit(1)
     print(f"✅  Server started on 0.0.0.0:{PORT}", flush=True)
-    # 啟動時預先暖機快取（背景執行，不阻擋伺服器啟動）
-    def warmup():
-        print("🔄  預熱股價快取...", flush=True)
-        get_quotes_only()
-        print("✅  股價快取完成", flush=True)
-        get_news_only()
-        print("✅  新聞快取完成", flush=True)
-    threading.Thread(target=warmup, daemon=True).start()
+    # 啟動背景更新執行緒（永久執行）
+    threading.Thread(target=_background_loop, daemon=True).start()
+    print("🔄  背景更新執行緒已啟動", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
