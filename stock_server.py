@@ -552,37 +552,58 @@ def get_chart_data(ticker):
         return data
 
 # ── 資料聚合 ────────────────────────────────────────────────────────────────────
-def get_all_data():
+NEWS_CACHE_SECONDS = 600  # 新聞快取 10 分鐘（獨立於股價）
+_news_cache: dict = {"data": {}, "ts": 0}
+
+def get_quotes_only():
+    """只抓股價（快，約 3-5 秒），不含新聞。"""
     now = time.time()
     with _cache_lock:
         if now - _data_cache["ts"] < DATA_CACHE_SECONDS:
-            return {
-                "updated": datetime.now().isoformat(),
-                "quotes":  _data_cache["quotes"],
-                "news":    _data_cache["news"],
-                "commentary": build_commentary(_data_cache["quotes"]),
-            }
-
-        quotes, news = [], {}
-        with ThreadPoolExecutor(max_workers=12) as ex:
-            q_fut = {ex.submit(fetch_quote, *row): row[0] for row in WATCHLIST}
-            n_fut = {ex.submit(fetch_news,  row[0]): row[0] for row in WATCHLIST}
-            for f in as_completed(q_fut):
+            return _data_cache["quotes"]
+        quotes = []
+        with ThreadPoolExecutor(max_workers=30) as ex:
+            futs = {ex.submit(fetch_quote, *row): row[0] for row in WATCHLIST}
+            for f in as_completed(futs):
                 quotes.append(f.result())
-            for f in as_completed(n_fut):
-                news[n_fut[f]] = f.result()
-
         order = [row[0] for row in WATCHLIST]
         quotes.sort(key=lambda q: order.index(q["ticker"]))
-
         _data_cache["quotes"] = quotes
-        _data_cache["news"]   = news
-        _data_cache["ts"]     = now
+        _data_cache["ts"] = now
+        return quotes
 
+def get_news_only():
+    """只抓新聞（慢，約 10-20 秒），獨立快取。"""
+    now = time.time()
+    with _cache_lock:
+        if now - _news_cache["ts"] < NEWS_CACHE_SECONDS:
+            return _news_cache["data"]
+        news = {}
+        with ThreadPoolExecutor(max_workers=30) as ex:
+            futs = {ex.submit(fetch_news, row[0]): row[0] for row in WATCHLIST}
+            for f in as_completed(futs):
+                news[futs[f]] = f.result()
+        _news_cache["data"] = news
+        _news_cache["ts"] = now
+        return news
+
+def get_all_data():
+    quotes = get_quotes_only()
+    news   = get_news_only()
     return {
-        "updated": datetime.now().isoformat(),
-        "quotes":  quotes,
-        "news":    news,
+        "updated":    datetime.now().isoformat(),
+        "quotes":     quotes,
+        "news":       news,
+        "commentary": build_commentary(quotes),
+    }
+
+def get_quotes_data():
+    """只回傳股價（給前端快速顯示用）。"""
+    quotes = get_quotes_only()
+    return {
+        "updated":    datetime.now().isoformat(),
+        "quotes":     quotes,
+        "news":       _news_cache["data"],   # 用舊新聞快取（可能空）
         "commentary": build_commentary(quotes),
     }
 
@@ -959,8 +980,21 @@ async function loadHouse(){
 }
 
 async function load(){
-  try{ render(await (await fetch("/data")).json()); }
-  catch{ document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後</div>`; }
+  // 第一步：先快速載入股價（3-5秒）
+  try{
+    const d = await (await fetch("/data")).json();
+    render(d);
+  } catch{
+    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後</div>`;
+    return;
+  }
+  // 第二步：背景補載新聞（10-20秒），載完自動更新
+  try{
+    const news = await (await fetch("/news")).json();
+    const d2 = await (await fetch("/data")).json();
+    d2.news = news;
+    render(d2);
+  } catch{ /* 新聞載入失敗不影響股價顯示 */ }
 }
 
 function tick(){
@@ -1104,7 +1138,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type","text/html; charset=utf-8")
             self.end_headers(); self.wfile.write(body)
         elif self.path == "/data":
-            payload = json.dumps(get_all_data()).encode()
+            payload = json.dumps(get_quotes_data()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/news":
+            payload = json.dumps(get_news_only()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
