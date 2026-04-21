@@ -913,8 +913,10 @@ function render(data){
     for(const q of items){
       const c = cls(q.change), cu = CUR[q.currency]||"";
       const note = ai[q.name]||"";
+      const safeTicker = q.ticker.replace(/'/g,"\\'");
+      const safeName   = q.name.replace(/&/g,"&amp;").replace(/'/g,"\\'");
       html += `<tr>
-<td class="name"><span class="name-link" onclick="openChart('${q.ticker}','${q.name}')">${q.name}</span>${note?`<div class="note">💬 ${note}</div>`:""}</td>
+<td class="name"><span class="name-link" onclick="openChart('${safeTicker}','${safeName}')">${q.name}</span>${note?`<div class="note">💬 ${note}</div>`:""}</td>
 <td class="price">${q.error?"--":cu+fmt(q.price)}</td>
 <td class="${c}">${q.error?"--":arr(q.change)+" "+sgn(q.change)+fmt(q.change)}</td>
 <td class="${c}">${q.error?"--":sgn(q.change_pct)+fmt(q.change_pct)+"%"}</td>
@@ -1005,8 +1007,8 @@ async function load(){
   try{
     const d = await (await fetch("/data")).json();
     render(d);
-  } catch{
-    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後</div>`;
+  } catch(e){
+    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後<br><small style="color:#888">${e.message||e}</small></div>`;
     return;
   }
   // 背景補載新聞，載完只更新新聞區塊不重抓股價
@@ -1090,7 +1092,8 @@ function closeChart(){
 }
 
 async function openChart(ticker, name){
-  document.getElementById("chart-title").textContent = `📈 ${name} — 技術分析`;
+  const displayName = name.replace(/&amp;/g,"&");
+  document.getElementById("chart-title").textContent = `📈 ${displayName} — 技術分析`;
   document.getElementById("chart-overlay").classList.add("open");
   document.getElementById("chart-container").innerHTML = '<div class="loading">⏳ 載入圖表中…</div>';
   document.getElementById("rsi-container").innerHTML   = "";
@@ -1157,6 +1160,7 @@ class Handler(BaseHTTPRequestHandler):
             body = HTML_PAGE.encode()
             self.send_response(200)
             self.send_header("Content-Type","text/html; charset=utf-8")
+            self.send_header("Cache-Control","no-cache, no-store, must-revalidate")
             self.end_headers(); self.wfile.write(body)
         elif self.path == "/data":
             payload = json.dumps(get_quotes_data()).encode()
