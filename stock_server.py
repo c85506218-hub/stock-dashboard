@@ -233,6 +233,127 @@ def roc_to_date(s):
 
 EXCLUDE_NOTES = ["親友", "特殊關係", "員工", "共有人", "非常規", "無法核實"]
 
+# ── 三大法人籌碼 ────────────────────────────────────────────────────────────────
+from datetime import timedelta
+import re as _re
+
+TWSE_T86_URL   = "https://www.twse.com.tw/rwd/zh/fund/T86"
+CHIPS_CACHE_SECONDS = 3600 * 8  # 收盤後每日更新一次，快取 8 小時
+
+_chips_cache: dict = {"data": {}, "ts": 0}
+_chips_lock  = threading.Lock()
+
+def _parse_tw_num(s):
+    try:
+        return int(str(s).replace(",", "").replace("+", "").strip())
+    except Exception:
+        return 0
+
+def fetch_chips():
+    """從 TWSE T86 API 抓三大法人最新買賣超（自動試最近5個工作日）"""
+    today = datetime.now()
+    for delta in range(7):
+        d = today - timedelta(days=delta)
+        if d.weekday() >= 5:        # 跳過六日
+            continue
+        date_str = d.strftime("%Y%m%d")
+        try:
+            r = requests.get(TWSE_T86_URL,
+                params={"response": "json", "date": date_str, "selectType": "ALLBUT0999"},
+                timeout=15, headers={"User-Agent": "Mozilla/5.0"},
+                verify=False)
+            j = r.json()
+            if j.get("stat") != "OK" or not j.get("data"):
+                continue
+            result = {}
+            trade_date = j.get("date", date_str)
+            for row in j["data"]:
+                code = str(row[0]).strip()
+                result[code] = {
+                    "date":        trade_date,
+                    "foreign_net": _parse_tw_num(row[4]),   # 外資淨買超（股）
+                    "trust_net":   _parse_tw_num(row[10]),  # 投信淨買超
+                    "dealer_net":  _parse_tw_num(row[13]) + _parse_tw_num(row[16]),  # 自營商
+                    "total_net":   _parse_tw_num(row[17]),  # 三大法人合計
+                }
+            print(f"[Chips] 抓到 {len(result)} 支，日期 {trade_date}", flush=True)
+            return result
+        except Exception as e:
+            print(f"[Chips] {date_str} 失敗: {e}", flush=True)
+    return {}
+
+def get_chips():
+    now = time.time()
+    with _chips_lock:
+        if _chips_cache["data"] and now - _chips_cache["ts"] < CHIPS_CACHE_SECONDS:
+            return _chips_cache["data"]
+    data = fetch_chips()
+    with _chips_lock:
+        _chips_cache["data"] = data
+        _chips_cache["ts"]   = now
+    return data
+
+# ── 台股重大訊息（MOPS） ────────────────────────────────────────────────────────
+MOPS_URL = "https://mops.twse.com.tw/mops/web/ajax_t05sr01_1"
+ANNOUNCE_CACHE_SECONDS = 3600  # 快取 1 小時
+
+_announce_cache: dict = {}          # {tw_code: {"data":[], "ts":0}}
+_announce_lock  = threading.Lock()
+
+def fetch_announcements(tw_code):
+    """從 MOPS 公開資訊觀測站抓重大訊息"""
+    end   = datetime.now()
+    start = end - timedelta(days=30)
+    try:
+        r = requests.post(MOPS_URL, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0",
+                     "Content-Type": "application/x-www-form-urlencoded",
+                     "Referer": "https://mops.twse.com.tw/mops/web/t05sr01_1"},
+            data={
+                "encodeURIComponent": "1", "step": "1", "firstin": "1",
+                "off": "1", "queryName": "co_id", "inpuType": "co_id",
+                "TYPEK": "all", "isnew": "false",
+                "co_id": tw_code,
+                "start_date": start.strftime("%Y%m%d"),
+                "end_date":   end.strftime("%Y%m%d"),
+            }, verify=False)
+        html = r.text
+        # 用 regex 解析 HTML 表格
+        rows = _re.findall(r'<tr[^>]*>(.*?)</tr>', html, _re.DOTALL)
+        results = []
+        for row in rows:
+            cells = _re.findall(r'<td[^>]*>(.*?)</td>', row, _re.DOTALL)
+            if len(cells) < 4:
+                continue
+            def strip_tags(s):
+                return _re.sub(r'<[^>]+>', '', s).strip()
+            date_txt  = strip_tags(cells[0])
+            time_txt  = strip_tags(cells[1])
+            title_txt = strip_tags(cells[3]) if len(cells) > 3 else ""
+            # 跳過表頭行
+            if not date_txt or not _re.match(r'\d{4}', date_txt):
+                continue
+            results.append({
+                "date":  date_txt,
+                "time":  time_txt,
+                "title": title_txt,
+            })
+        return results[:10]   # 最近 10 則
+    except Exception as e:
+        print(f"[Announce] {tw_code} 失敗: {e}", flush=True)
+        return []
+
+def get_announcements(tw_code):
+    now = time.time()
+    with _announce_lock:
+        cached = _announce_cache.get(tw_code)
+        if cached and now - cached["ts"] < ANNOUNCE_CACHE_SECONDS:
+            return cached["data"]
+    data = fetch_announcements(tw_code)
+    with _announce_lock:
+        _announce_cache[tw_code] = {"data": data, "ts": now}
+    return data
+
 def fetch_house_prices():
     """下載內政部實價登錄，回傳台南透天厝分析資料（已過濾異常交易）。"""
     import tempfile, os as _os
@@ -672,10 +793,30 @@ def fetch_chart_data(ticker, period="6mo"):
             "macd_dea":  to_series(dea_raw),
             "macd_hist": to_hist_series(hist_raw),
             "summary":   summary,
+            "chips":     _get_chips_for(ticker),
         }
     except Exception as e:
         print(f"[Chart] {ticker} 錯誤: {e}", flush=True)
         return None
+
+def _get_chips_for(ticker):
+    """若為台股，附上三大法人資料（以千股為單位）"""
+    if not ticker.endswith(".TW"):
+        return None
+    tw_code = ticker.replace(".TW", "")
+    all_chips = get_chips()
+    c = all_chips.get(tw_code)
+    if not c:
+        return None
+    def to_k(n):   # 轉換為張（1張=1000股）
+        return round(n / 1000, 1)
+    return {
+        "date":        c["date"],
+        "foreign_net": to_k(c["foreign_net"]),
+        "trust_net":   to_k(c["trust_net"]),
+        "dealer_net":  to_k(c["dealer_net"]),
+        "total_net":   to_k(c["total_net"]),
+    }
 
 def get_chart_data(ticker, period="6mo"):
     key = f"{ticker}_{period}"
@@ -1020,6 +1161,19 @@ tr:hover td { background: #1d2338; }
 .ap-news-item a:hover { text-decoration:underline; color:#79c0ff; }
 .ap-news-meta { color:#484f58; font-size:.67rem; }
 .ap-news-loading { color:#484f58; font-size:.75rem; padding:8px 0; text-align:center; }
+/* 籌碼指標 */
+.chip-bar { display:flex; gap:4px; flex-wrap:wrap; margin-top:3px; }
+.chip-tag {
+  font-size:.62rem; padding:1px 5px; border-radius:3px; font-family:monospace;
+  font-weight:600; white-space:nowrap;
+}
+.chip-bull { background:#0d4429; color:#3fb950; }
+.chip-bear { background:#3d0f0f; color:#f85149; }
+.chip-flat { background:#21262d; color:#6e7681; }
+/* 籌碼大條 */
+.chip-row-bar {
+  height:4px; border-radius:2px; transition:width .3s;
+}
 .name-link { cursor:pointer; }
 .name-link:hover { text-decoration:underline; color:#60a5fa; }
 </style>
@@ -1098,7 +1252,8 @@ const REFRESH  = 60;
 const SECTIONS = ["台股大盤","台灣ETF－高息","台灣ETF－主題","台股－半導體","台股－電子製造","台股－金融","台股－傳產其他","美股大盤","美股－科技AI","美股－多元"];
 const CUR      = {NTD:"NT$", USD:"$"};
 let timer = REFRESH;
-let _allNews = {};   // 全局新聞快取 {ticker: [{title,url,source,pub}]}
+let _allNews  = {};   // 全局新聞快取 {ticker: [{title,url,source,pub}]}
+let _allChips = {};   // 全局籌碼快取 {tw_code: {foreign_net,...}}
 
 const fmt = (n,d=2) => n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const cls  = v => v>0?"up":v<0?"down":"flat";
@@ -1141,8 +1296,20 @@ function render(data){
       const note = ai[q.name]||"";
       const safeTicker = q.ticker.replace(/'/g,"\\'");
       const safeName   = q.name.replace(/&/g,"&amp;").replace(/'/g,"\\'");
+      // 台股籌碼標籤
+      let chipTag = "";
+      if(q.ticker.endsWith(".TW")){
+        const twc = q.ticker.replace(".TW","");
+        const ch  = _allChips[twc];
+        const chipCls = v => v>0?"chip-bull":v<0?"chip-bear":"chip-flat";
+        const chipTxt = v => (v>0?"+":"")+v.toLocaleString()+"張";
+        chipTag = `<div class="chip-bar" data-tw-code="${twc}">${ch?`
+          <span class="chip-tag ${chipCls(ch.foreign_net)}">外資 ${chipTxt(ch.foreign_net)}</span>
+          <span class="chip-tag ${chipCls(ch.trust_net)}">投信 ${chipTxt(ch.trust_net)}</span>`:""
+        }</div>`;
+      }
       html += `<tr>
-<td class="name"><span class="name-link" onclick="openChart('${safeTicker}','${safeName}')">${q.name}</span>${note?`<div class="note">💬 ${note}</div>`:""}</td>
+<td class="name"><span class="name-link" onclick="openChart('${safeTicker}','${safeName}')">${q.name}</span>${note?`<div class="note">💬 ${note}</div>`:""}${chipTag}</td>
 <td class="price">${q.error?"--":cu+fmt(q.price)}</td>
 <td class="${c}">${q.error?"--":arr(q.change)+" "+sgn(q.change)+fmt(q.change)}</td>
 <td class="${c}">${q.error?"--":sgn(q.change_pct)+fmt(q.change_pct)+"%"}</td>
@@ -1527,12 +1694,75 @@ function renderAnalysis(d, ticker){
       <span class="ap-val ap-bull">${fv(s.low6m)}</span>
     </div>
   </div>
+  <div class="ap-card" id="ap-chips-card" style="display:none">
+    <div class="ap-card-title">🏦 三大法人籌碼</div>
+    <div id="ap-chips-body"><div class="ap-news-loading">⏳ 載入中…</div></div>
+  </div>
+  <div class="ap-card" id="ap-announce-card" style="display:none">
+    <div class="ap-card-title">📢 重大訊息公告</div>
+    <div id="ap-announce-body"><div class="ap-news-loading">⏳ 載入中…</div></div>
+  </div>
   <div class="ap-card">
-    <div class="ap-card-title">📰 最新消息</div>
+    <div class="ap-card-title">📰 最新新聞</div>
     <div id="ap-news-body">${newsHtml}</div>
   </div>`;
 
-  // 若新聞尚未載入，背景補抓
+  // ── 背景補載籌碼 + 重大訊息（台股才抓）──────────────────
+  const isTW = ticker && ticker.endsWith(".TW");
+  const twCode = isTW ? ticker.replace(".TW","") : null;
+
+  if(isTW){
+    document.getElementById("ap-chips-card").style.display = "";
+    document.getElementById("ap-announce-card").style.display = "";
+
+    // 三大法人
+    fetch("/chips").then(r=>r.json()).then(chips=>{
+      const el = document.getElementById("ap-chips-body");
+      if(!el) return;
+      const c = chips[twCode];
+      if(!c){ el.innerHTML=`<div class="ap-news-loading">無籌碼資料</div>`; return; }
+      const chip_row = (label, val) => {
+        const cls = val>0?"ap-bull":val<0?"ap-bear":"ap-flat";
+        const sign = val>0?"+":"";
+        const bar_w = Math.min(Math.abs(val)/50*100, 100);
+        const bar_c = val>0?"#3fb950":val<0?"#f85149":"#484f58";
+        return `<div class="ap-row">
+          <span class="ap-label">${label}</span>
+          <span class="ap-val ${cls}" style="font-size:.72rem">${sign}${val.toLocaleString()} 張</span>
+        </div>
+        <div style="height:3px;background:#21262d;border-radius:2px;margin:-4px 0 6px">
+          <div class="chip-row-bar" style="width:${bar_w}%;background:${bar_c}"></div>
+        </div>`;
+      };
+      el.innerHTML = `
+        <div style="font-size:.65rem;color:#484f58;margin-bottom:6px">日期：${c.date}</div>
+        ${chip_row("外資", c.foreign_net)}
+        ${chip_row("投信", c.trust_net)}
+        ${chip_row("自營商", c.dealer_net)}
+        <div style="border-top:1px solid #21262d;margin:4px 0"></div>
+        ${chip_row("三大合計", c.total_net)}`;
+    }).catch(()=>{
+      const el = document.getElementById("ap-chips-body");
+      if(el) el.innerHTML=`<div class="ap-news-loading">籌碼載入失敗</div>`;
+    });
+
+    // 重大訊息
+    fetch(`/announce?code=${twCode}`).then(r=>r.json()).then(items=>{
+      const el = document.getElementById("ap-announce-body");
+      if(!el) return;
+      if(!items.length){ el.innerHTML=`<div class="ap-news-loading">近30日無重大訊息</div>`; return; }
+      el.innerHTML = items.map(a=>`
+<div class="ap-news-item">
+  <div style="color:#e6edf3;font-size:.73rem">${a.title}</div>
+  <div class="ap-news-meta">${a.date} ${a.time}</div>
+</div>`).join("");
+    }).catch(()=>{
+      const el = document.getElementById("ap-announce-body");
+      if(el) el.innerHTML=`<div class="ap-news-loading">重大訊息載入失敗</div>`;
+    });
+  }
+
+  // ── 背景補載新聞 ─────────────────────────────────────────
   if(!newsItems.length){
     fetch("/news").then(r=>r.json()).then(news=>{
       _allNews = {..._allNews, ...news};
@@ -1555,7 +1785,27 @@ function renderAnalysis(d, ticker){
   }
 }
 
+async function loadChips(){
+  try{
+    const chips = await (await fetch("/chips")).json();
+    _allChips = chips;
+    // 更新每個 chip-bar（不重抓股價，只補上標籤）
+    document.querySelectorAll("[data-tw-code]").forEach(el=>{
+      const code = el.dataset.twCode;
+      const ch   = chips[code];
+      if(!ch) return;
+      const chipCls = v => v>0?"chip-bull":v<0?"chip-bear":"chip-flat";
+      const chipTxt = v => (v>0?"+":"")+v.toLocaleString()+"張";
+      el.innerHTML = `
+        <span class="chip-tag ${chipCls(ch.foreign_net)}">外資 ${chipTxt(ch.foreign_net)}</span>
+        <span class="chip-tag ${chipCls(ch.trust_net)}">投信 ${chipTxt(ch.trust_net)}</span>`;
+    });
+  } catch(e){ console.log("chips load failed:", e); }
+}
+
 load(); loadHouse(); loadCal(); tick();
+// 延遲載入籌碼（不阻塞主要股價顯示）
+setTimeout(loadChips, 3000);
 </script>
 </body>
 </html>
@@ -1630,6 +1880,26 @@ class Handler(BaseHTTPRequestHandler):
                 payload = safe_json(get_chart_data(ticker, period) or {}).encode()
             else:
                 payload = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/chips":
+            # 傳回全部台股三大法人資料
+            payload = safe_json(get_chips()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path.startswith("/announce"):
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            tw_code = qs.get("code", [""])[0].strip()
+            if tw_code and _re.match(r'^\d{4,6}$', tw_code):
+                data = get_announcements(tw_code)
+            else:
+                data = []
+            payload = safe_json(data).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
