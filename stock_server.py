@@ -1011,6 +1011,15 @@ tr:hover td { background: #1d2338; }
   .chart-right { width:100%; border-left:none; border-top:1px solid #21262d; max-height:220px; }
   .chart-left  { padding:8px; }
 }
+/* 圖表面板新聞 */
+.ap-news-item {
+  padding:6px 0; border-bottom:1px solid #21262d; font-size:.73rem; line-height:1.4;
+}
+.ap-news-item:last-child { border-bottom:none; }
+.ap-news-item a { color:#58a6ff; text-decoration:none; display:block; margin-bottom:2px; }
+.ap-news-item a:hover { text-decoration:underline; color:#79c0ff; }
+.ap-news-meta { color:#484f58; font-size:.67rem; }
+.ap-news-loading { color:#484f58; font-size:.75rem; padding:8px 0; text-align:center; }
 .name-link { cursor:pointer; }
 .name-link:hover { text-decoration:underline; color:#60a5fa; }
 </style>
@@ -1089,6 +1098,7 @@ const REFRESH  = 60;
 const SECTIONS = ["台股大盤","台灣ETF－高息","台灣ETF－主題","台股－半導體","台股－電子製造","台股－金融","台股－傳產其他","美股大盤","美股－科技AI","美股－多元"];
 const CUR      = {NTD:"NT$", USD:"$"};
 let timer = REFRESH;
+let _allNews = {};   // 全局新聞快取 {ticker: [{title,url,source,pub}]}
 
 const fmt = (n,d=2) => n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const cls  = v => v>0?"up":v<0?"down":"flat";
@@ -1226,6 +1236,7 @@ async function loadHouse(){
 async function load(){
   try{
     const d = await (await fetch("/data")).json();
+    if(d.news) _allNews = {..._allNews, ...d.news};  // 先存初始新聞
     render(d);
   } catch(e){
     document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 連線失敗，請稍後<br><small style="color:#888">${e.message||e}</small></div>`;
@@ -1234,6 +1245,7 @@ async function load(){
   // 背景補載新聞，載完只更新新聞區塊不重抓股價
   try{
     const news = await (await fetch("/news")).json();
+    _allNews = news;   // 存進全局，圖表面板可直接使用
     const cached = await (await fetch("/data")).json();  // 此時已有快取，瞬間回傳
     cached.news = news;
     render(cached);
@@ -1432,16 +1444,28 @@ async function _loadChart(ticker, displayName, period){
     <span class="cph-vol">量 ${volFmt(sm.last_vol)}</span>`;
 
   // ── 右側分析面板 ──────────────────────────────────────────────
-  renderAnalysis(d);
+  renderAnalysis(d, ticker);
 }
 
-function renderAnalysis(d){
+function renderAnalysis(d, ticker){
   const s = d.summary||{};
   const fv = v => v!=null ? v.toLocaleString() : "--";
   const fp = v => v!=null ? `${v>=0?"+":""}${v.toFixed(2)}%` : "--";
   const pc = v => v==null?"ap-flat":v>=0?"ap-bull":"ap-bear";
-
   const tagHtml = (txt, cls) => `<span class="ap-tag ${cls}">${txt}</span>`;
+
+  // 新聞 HTML
+  const newsItems = _allNews[ticker||""]||[];
+  let newsHtml = "";
+  if(newsItems.length){
+    newsHtml = newsItems.slice(0,6).map(a=>`
+<div class="ap-news-item">
+  <a href="${a.url}" target="_blank" rel="noopener noreferrer">${a.title}</a>
+  <div class="ap-news-meta">${a.source||""}${a.pub?" · "+timeAgo(a.pub):""}</div>
+</div>`).join("");
+  } else {
+    newsHtml = `<div class="ap-news-loading" id="ap-news-spinner">⏳ 新聞載入中…</div>`;
+  }
 
   document.getElementById("chart-analysis").innerHTML = `
   <div class="ap-card">
@@ -1452,15 +1476,15 @@ function renderAnalysis(d){
     </div>
     <div class="ap-row">
       <span class="ap-label">MA5</span>
-      <span class="ap-val ap-bull">${fv(s.ma5)} <small>${s.ma5_dir||""}</small></span>
+      <span class="ap-val ap-bull">${fv(s.ma5)} <small style="color:#484f58">${s.ma5_dir||""}</small></span>
     </div>
     <div class="ap-row">
       <span class="ap-label">MA20</span>
-      <span class="ap-val ap-warn">${fv(s.ma20)}</span>
+      <span class="ap-val ap-warn">${fv(s.ma20)} <small style="color:#484f58">${s.ma20_dir||""}</small></span>
     </div>
     <div class="ap-row">
       <span class="ap-label">MA60</span>
-      <span class="ap-val ap-flat" style="color:#a78bfa">${fv(s.ma60)}</span>
+      <span class="ap-val" style="color:#a78bfa">${fv(s.ma60)}</span>
     </div>
   </div>
   <div class="ap-card">
@@ -1474,12 +1498,10 @@ function renderAnalysis(d){
       ${tagHtml(s.macd||"--", s.macd_cls||"flat")}
     </div>
     <div class="ap-row">
-      <span class="ap-label">DIF</span>
-      <span class="ap-val ${s.dif!=null&&s.dif>=0?"ap-bull":"ap-bear"}">${s.dif!=null?s.dif.toFixed(3):"--"}</span>
-    </div>
-    <div class="ap-row">
-      <span class="ap-label">DEA</span>
-      <span class="ap-val ap-flat">${s.dea!=null?s.dea.toFixed(3):"--"}</span>
+      <span class="ap-label">DIF / DEA</span>
+      <span class="ap-val ${s.dif!=null&&s.dif>=0?"ap-bull":"ap-bear"}" style="font-size:.72rem">
+        ${s.dif!=null?s.dif.toFixed(3):"--"} / ${s.dea!=null?s.dea.toFixed(3):"--"}
+      </span>
     </div>
   </div>
   <div class="ap-card">
@@ -1496,18 +1518,41 @@ function renderAnalysis(d){
       <span class="ap-label">近 3 月</span>
       <span class="ap-val ${pc(s.chg60)}">${fp(s.chg60)}</span>
     </div>
-  </div>
-  <div class="ap-card">
-    <div class="ap-card-title">區間高低</div>
     <div class="ap-row">
-      <span class="ap-label">期間高點</span>
+      <span class="ap-label">高點</span>
       <span class="ap-val ap-bear">${fv(s.high6m)}</span>
     </div>
     <div class="ap-row">
-      <span class="ap-label">期間低點</span>
+      <span class="ap-label">低點</span>
       <span class="ap-val ap-bull">${fv(s.low6m)}</span>
     </div>
+  </div>
+  <div class="ap-card">
+    <div class="ap-card-title">📰 最新消息</div>
+    <div id="ap-news-body">${newsHtml}</div>
   </div>`;
+
+  // 若新聞尚未載入，背景補抓
+  if(!newsItems.length){
+    fetch("/news").then(r=>r.json()).then(news=>{
+      _allNews = {..._allNews, ...news};
+      const items = news[ticker||""]||[];
+      const el = document.getElementById("ap-news-body");
+      if(!el) return;
+      if(!items.length){
+        el.innerHTML = `<div class="ap-news-loading">暫無相關新聞</div>`;
+        return;
+      }
+      el.innerHTML = items.slice(0,6).map(a=>`
+<div class="ap-news-item">
+  <a href="${a.url}" target="_blank" rel="noopener noreferrer">${a.title}</a>
+  <div class="ap-news-meta">${a.source||""}${a.pub?" · "+timeAgo(a.pub):""}</div>
+</div>`).join("");
+    }).catch(()=>{
+      const el = document.getElementById("ap-news-body");
+      if(el) el.innerHTML=`<div class="ap-news-loading">新聞載入失敗</div>`;
+    });
+  }
 }
 
 load(); loadHouse(); loadCal(); tick();
