@@ -496,6 +496,16 @@ def calc_ma(prices, n):
             result.append(round(sum(prices[i-n+1:i+1]) / n, 2))
     return result
 
+def calc_ema(prices, period):
+    result = [None] * len(prices)
+    if len(prices) < period:
+        return result
+    result[period-1] = round(sum(prices[:period]) / period, 6)
+    k = 2 / (period + 1)
+    for i in range(period, len(prices)):
+        result[i] = round(prices[i] * k + result[i-1] * (1 - k), 6)
+    return result
+
 def calc_rsi(prices, period=14):
     result = [None] * len(prices)
     if len(prices) <= period:
@@ -523,12 +533,103 @@ def calc_rsi(prices, period=14):
             result[i] = round(100 - 100 / (1 + rs), 2)
     return result
 
-def fetch_chart_data(ticker):
+def calc_macd(prices, fast=12, slow=26, signal=9):
+    ema_f = calc_ema(prices, fast)
+    ema_s = calc_ema(prices, slow)
+    dif = [round(ema_f[i] - ema_s[i], 4) if ema_f[i] is not None and ema_s[i] is not None else None
+           for i in range(len(prices))]
+    first = next((i for i, v in enumerate(dif) if v is not None), None)
+    dea = [None] * len(prices)
+    if first is not None:
+        sub = [dif[i] if dif[i] is not None else 0.0 for i in range(first, len(prices))]
+        dea_sub = calc_ema(sub, signal)
+        for i, v in enumerate(dea_sub):
+            dea[first + i] = round(v, 4) if v is not None else None
+    hist = [round((dif[i] - dea[i]) * 2, 4) if dif[i] is not None and dea[i] is not None else None
+            for i in range(len(prices))]
+    return dif, dea, hist
+
+def _safe_last(lst, offset=0):
+    """從尾端取第 offset 個非 None 值"""
+    count = 0
+    for v in reversed(lst):
+        if v is not None:
+            if count == offset:
+                return v
+            count += 1
+    return None
+
+def _build_summary(closes, ma5, ma20, ma60, rsi, dif, dea, hist, vols):
+    """根據技術指標計算文字摘要"""
+    m5 = _safe_last(ma5); m20 = _safe_last(ma20); m60 = _safe_last(ma60)
+    m5p = _safe_last(ma5, 5); m20p = _safe_last(ma20, 5)
+    rsi_v = _safe_last(rsi)
+    dif_v = _safe_last(dif); dea_v = _safe_last(dea); hist_v = _safe_last(hist)
+    hist_p = _safe_last(hist, 1)
+
+    # 趨勢
+    if m5 and m20 and m60 and m5 > m20 > m60:
+        trend, trend_cls = "多頭排列", "bull"
+    elif m5 and m20 and m60 and m5 < m20 < m60:
+        trend, trend_cls = "空頭排列", "bear"
+    else:
+        trend, trend_cls = "盤整", "flat"
+
+    # RSI
+    if rsi_v is None:
+        rsi_txt, rsi_cls = "--", "flat"
+    elif rsi_v >= 70:
+        rsi_txt, rsi_cls = f"{rsi_v:.1f}　超買", "bear"
+    elif rsi_v >= 60:
+        rsi_txt, rsi_cls = f"{rsi_v:.1f}　偏強", "bull"
+    elif rsi_v >= 40:
+        rsi_txt, rsi_cls = f"{rsi_v:.1f}　中性", "flat"
+    elif rsi_v >= 30:
+        rsi_txt, rsi_cls = f"{rsi_v:.1f}　偏弱", "warn"
+    else:
+        rsi_txt, rsi_cls = f"{rsi_v:.1f}　超賣", "bull"  # 超賣反而可能反彈
+
+    # MACD
+    if dif_v is not None and dea_v is not None and hist_v is not None and hist_p is not None:
+        if dif_v > dea_v:
+            macd_txt = "多頭擴張" if hist_v > hist_p else "多頭收斂"
+            macd_cls = "bull"
+        else:
+            macd_txt = "空頭擴張" if hist_v < hist_p else "空頭收斂"
+            macd_cls = "bear"
+    else:
+        macd_txt, macd_cls = "--", "flat"
+
+    # 漲跌幅
+    def pct(n):
+        if len(closes) > n and closes[-n-1]:
+            return round((closes[-1] - closes[-n-1]) / closes[-n-1] * 100, 2)
+        return None
+    c5 = pct(5); c20 = pct(20); c60 = pct(60)
+
+    return {
+        "trend": trend, "trend_cls": trend_cls,
+        "ma5": round(m5, 2) if m5 else None,
+        "ma20": round(m20, 2) if m20 else None,
+        "ma60": round(m60, 2) if m60 else None,
+        "ma5_dir":  "↑" if m5 and m5p and m5 > m5p else "↓",
+        "ma20_dir": "↑" if m20 and m20p and m20 > m20p else "↓",
+        "rsi": rsi_txt, "rsi_cls": rsi_cls,
+        "macd": macd_txt, "macd_cls": macd_cls,
+        "dif": round(dif_v, 3) if dif_v is not None else None,
+        "dea": round(dea_v, 3) if dea_v is not None else None,
+        "chg5": c5, "chg20": c20, "chg60": c60,
+        "high6m": round(max(closes), 2) if closes else None,
+        "low6m":  round(min(closes), 2) if closes else None,
+        "last_vol": vols[-1] if vols else None,
+    }
+
+def fetch_chart_data(ticker, period="6mo"):
     try:
-        df = yf.Ticker(ticker).history(period="6mo", interval="1d", auto_adjust=True)
+        df = yf.Ticker(ticker).history(period=period, interval="1d", auto_adjust=True)
         if df.empty:
             return None
-        dates = [d.strftime("%Y-%m-%d") for d in df.index]
+        dates  = [d.strftime("%Y-%m-%d") for d in df.index]
         opens  = [round(float(v), 2) for v in df["Open"]]
         highs  = [round(float(v), 2) for v in df["High"]]
         lows   = [round(float(v), 2) for v in df["Low"]]
@@ -545,33 +646,49 @@ def fetch_chart_data(ticker):
         ma20_raw = calc_ma(closes, 20)
         ma60_raw = calc_ma(closes, 60)
         rsi_raw  = calc_rsi(closes, 14)
+        dif_raw, dea_raw, hist_raw = calc_macd(closes)
 
         def to_series(raw):
             return [{"time": dates[i], "value": raw[i]}
                     for i in range(len(dates)) if raw[i] is not None]
 
+        def to_hist_series(raw):
+            return [{"time": dates[i], "value": raw[i],
+                     "color": "#ef5350" if raw[i] < 0 else "#26a69a"}
+                    for i in range(len(dates)) if raw[i] is not None]
+
+        summary = _build_summary(closes, ma5_raw, ma20_raw, ma60_raw,
+                                  rsi_raw, dif_raw, dea_raw, hist_raw, vols)
         return {
             "ticker":  ticker,
+            "period":  period,
             "candles": candles,
             "volumes": volumes,
             "ma5":     to_series(ma5_raw),
             "ma20":    to_series(ma20_raw),
             "ma60":    to_series(ma60_raw),
             "rsi":     to_series(rsi_raw),
+            "macd_dif":  to_series(dif_raw),
+            "macd_dea":  to_series(dea_raw),
+            "macd_hist": to_hist_series(hist_raw),
+            "summary":   summary,
         }
     except Exception as e:
         print(f"[Chart] {ticker} 錯誤: {e}", flush=True)
         return None
 
-def get_chart_data(ticker):
+def get_chart_data(ticker, period="6mo"):
+    key = f"{ticker}_{period}"
     now = time.time()
     with _chart_cache_lock:
-        cached = _chart_cache.get(ticker)
+        cached = _chart_cache.get(key)
         if cached and now - cached["ts"] < CHART_CACHE_SECONDS:
             return cached["data"]
-        data = fetch_chart_data(ticker)
-        _chart_cache[ticker] = {"data": data, "ts": now}
-        return data
+    # fetch outside lock to avoid blocking other requests
+    data = fetch_chart_data(ticker, period)
+    with _chart_cache_lock:
+        _chart_cache[key] = {"data": data, "ts": now}
+    return data
 
 # ── 背景定期更新（HTTP 請求永遠瞬間回傳快取，不等待網路）────────────────────────
 NEWS_CACHE_SECONDS = 900
@@ -797,43 +914,102 @@ tr:hover td { background: #1d2338; }
 .cal-link:hover { color: #60a5fa; }
 /* ── 技術分析 Modal ────────────────────────────────────────────── */
 .chart-modal-overlay {
-  display:none; position:fixed; inset:0; background:rgba(0,0,0,.75);
-  z-index:1000; align-items:center; justify-content:center;
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.82);
+  z-index:1000; align-items:center; justify-content:center; padding:8px;
 }
 .chart-modal-overlay.open { display:flex; }
 .chart-modal {
-  background:#131722; border:1px solid #2d3748; border-radius:12px;
-  width:min(960px,96vw); max-height:90vh; overflow:hidden;
-  display:flex; flex-direction:column;
+  background:#0d1117; border:1px solid #21262d;
+  border-radius:10px; width:min(1260px,98vw); max-height:95vh;
+  overflow:hidden; display:flex; flex-direction:column;
+  box-shadow:0 24px 80px rgba(0,0,0,.8);
 }
+/* Header */
 .chart-modal-header {
-  display:flex; align-items:center; justify-content:space-between;
-  padding:14px 20px; border-bottom:1px solid #2d3748;
+  display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  padding:10px 16px; border-bottom:1px solid #21262d;
+  background:#161b22;
 }
-.chart-modal-title { font-size:1rem; font-weight:700; color:#f8fafc; }
+.chart-modal-title { font-size:.95rem; font-weight:700; color:#e6edf3; white-space:nowrap; }
+.chart-price-bar {
+  display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; flex:1;
+}
+.cph-price { font-size:1.35rem; font-weight:700; color:#e6edf3; font-family:monospace; }
+.cph-chg   { font-size:1rem; font-weight:600; font-family:monospace; }
+.cph-vol   { font-size:.78rem; color:#6e7681; }
 .chart-modal-close {
-  background:none; border:none; color:#94a3b8; font-size:1.4rem;
-  cursor:pointer; padding:2px 8px; border-radius:6px;
+  background:none; border:none; color:#6e7681; font-size:1.4rem;
+  cursor:pointer; padding:2px 8px; border-radius:6px; margin-left:auto;
 }
-.chart-modal-close:hover { background:#2d3748; color:#f8fafc; }
-.chart-modal-body { padding:12px 16px 16px; overflow-y:auto; }
-.chart-period-btns { display:flex; gap:6px; margin-bottom:10px; }
+.chart-modal-close:hover { background:#21262d; color:#e6edf3; }
+/* Period buttons */
+.chart-period-row {
+  display:flex; align-items:center; gap:6px; padding:8px 16px 0;
+}
 .chart-period-btn {
-  padding:4px 12px; border-radius:6px; border:1px solid #374151;
-  background:transparent; color:#94a3b8; font-size:.8rem; cursor:pointer;
+  padding:3px 11px; border-radius:5px; border:1px solid #30363d;
+  background:transparent; color:#8b949e; font-size:.77rem; cursor:pointer;
 }
-.chart-period-btn.active, .chart-period-btn:hover {
-  background:#2563eb; color:#fff; border-color:#2563eb;
+.chart-period-btn.active { background:#1f6feb; color:#fff; border-color:#1f6feb; }
+.chart-period-btn:hover:not(.active) { background:#21262d; color:#e6edf3; }
+/* Body layout */
+.chart-modal-body {
+  display:flex; flex:1; overflow:hidden; min-height:0;
+}
+.chart-left {
+  flex:1; min-width:0; display:flex; flex-direction:column;
+  padding:8px 0 8px 12px; overflow:hidden;
+}
+.chart-label {
+  font-size:.68rem; color:#484f58; font-family:monospace;
+  padding:2px 0 2px 4px; letter-spacing:.04em;
 }
 .chart-legend {
-  display:flex; gap:14px; flex-wrap:wrap; font-size:.75rem; margin-bottom:8px;
+  display:flex; gap:12px; flex-wrap:wrap; font-size:.72rem;
+  padding:0 4px 4px; color:#8b949e;
 }
-.chart-legend span { display:flex; align-items:center; gap:5px; }
-.chart-legend i { display:inline-block; width:24px; height:3px; border-radius:2px; }
-#chart-container { height:340px; }
-#rsi-container   { height:120px; margin-top:8px; }
-.rsi-label {
-  font-size:.72rem; color:#64748b; margin-bottom:3px; margin-top:6px;
+.chart-legend span { display:flex; align-items:center; gap:4px; }
+.chart-legend i { display:inline-block; width:20px; height:2px; border-radius:1px; }
+#chart-container  { flex:0 0 270px; }
+#vol-container    { flex:0 0 70px;  margin-top:4px; }
+#macd-container   { flex:0 0 110px; margin-top:4px; }
+#rsi-container    { flex:0 0 90px;  margin-top:4px; }
+/* Right analysis panel */
+.chart-right {
+  width:240px; flex-shrink:0; border-left:1px solid #21262d;
+  overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:10px;
+}
+.ap-card {
+  background:#161b22; border:1px solid #21262d; border-radius:8px;
+  padding:10px 12px;
+}
+.ap-card-title {
+  font-size:.7rem; color:#484f58; font-weight:600; letter-spacing:.08em;
+  text-transform:uppercase; margin-bottom:8px;
+}
+.ap-row {
+  display:flex; justify-content:space-between; align-items:center;
+  font-size:.78rem; padding:3px 0; border-bottom:1px solid #21262d;
+}
+.ap-row:last-child { border-bottom:none; }
+.ap-label { color:#8b949e; }
+.ap-val   { font-family:monospace; font-weight:600; }
+.ap-bull  { color:#3fb950; }
+.ap-bear  { color:#f85149; }
+.ap-warn  { color:#d29922; }
+.ap-flat  { color:#8b949e; }
+.ap-tag {
+  font-size:.7rem; padding:1px 7px; border-radius:12px; font-weight:600;
+}
+.ap-tag.bull { background:#0d4429; color:#3fb950; }
+.ap-tag.bear { background:#3d0f0f; color:#f85149; }
+.ap-tag.flat { background:#21262d; color:#8b949e; }
+.ap-tag.warn { background:#3d2a00; color:#d29922; }
+/* Responsive: collapse right panel on small screens */
+@media(max-width:700px){
+  .chart-modal-body { flex-direction:column; }
+  .chart-right { width:100%; border-left:none; border-top:1px solid #21262d; max-height:220px; }
+  .chart-left  { padding:8px; }
 }
 .name-link { cursor:pointer; }
 .name-link:hover { text-decoration:underline; color:#60a5fa; }
@@ -876,17 +1052,34 @@ tr:hover td { background: #1d2338; }
   <div class="chart-modal">
     <div class="chart-modal-header">
       <div class="chart-modal-title" id="chart-title">技術分析</div>
+      <div class="chart-price-bar" id="chart-price-bar"></div>
       <button class="chart-modal-close" onclick="closeChart()">✕</button>
     </div>
+    <div class="chart-period-row">
+      <span style="font-size:.72rem;color:#484f58;margin-right:4px;">週期</span>
+      <button class="chart-period-btn" onclick="switchPeriod('1mo')">1M</button>
+      <button class="chart-period-btn" onclick="switchPeriod('3mo')">3M</button>
+      <button class="chart-period-btn active" onclick="switchPeriod('6mo')">6M</button>
+      <button class="chart-period-btn" onclick="switchPeriod('1y')">1Y</button>
+    </div>
     <div class="chart-modal-body">
-      <div class="chart-legend">
-        <span><i style="background:#26a69a"></i>MA5</span>
-        <span><i style="background:#f59e0b"></i>MA20</span>
-        <span><i style="background:#a78bfa"></i>MA60</span>
+      <div class="chart-left">
+        <div class="chart-legend">
+          <span><i style="background:#26a69a"></i>MA5</span>
+          <span><i style="background:#f59e0b"></i>MA20</span>
+          <span><i style="background:#a78bfa"></i>MA60</span>
+        </div>
+        <div id="chart-container"></div>
+        <div class="chart-label" style="margin-top:6px;">▌ 成交量</div>
+        <div id="vol-container"></div>
+        <div class="chart-label" style="margin-top:6px;">▌ MACD (DIF/DEA)</div>
+        <div id="macd-container"></div>
+        <div class="chart-label" style="margin-top:6px;">▌ RSI(14)　超買&gt;70 超賣&lt;30</div>
+        <div id="rsi-container"></div>
       </div>
-      <div id="chart-container"></div>
-      <div class="rsi-label">RSI(14) — 超買 &gt;70（紅線）、超賣 &lt;30（綠線）</div>
-      <div id="rsi-container"></div>
+      <div class="chart-right" id="chart-analysis">
+        <div class="loading" style="font-size:.8rem;padding:20px 0;text-align:center">⏳ 載入中…</div>
+      </div>
     </div>
   </div>
 </div>
@@ -1110,67 +1303,211 @@ async function loadCal(){
 }
 
 // ── 技術分析圖表 ─────────────────────────────────────────────────
-let _chartMain = null, _chartRsi = null;
+let _chartMain=null, _chartVol=null, _chartMacd=null, _chartRsi=null;
+let _curTicker="", _curName="", _curPeriod="6mo";
+
+function destroyCharts(){
+  [_chartMain,_chartVol,_chartMacd,_chartRsi].forEach(c=>{ if(c){c.remove();} });
+  _chartMain=_chartVol=_chartMacd=_chartRsi=null;
+}
 
 function closeChart(){
   document.getElementById("chart-overlay").classList.remove("open");
-  if(_chartMain){ _chartMain.remove(); _chartMain=null; }
-  if(_chartRsi) { _chartRsi.remove();  _chartRsi=null; }
+  destroyCharts();
+  _curTicker=""; _curName=""; _curPeriod="6mo";
+}
+
+async function switchPeriod(p){
+  document.querySelectorAll(".chart-period-btn").forEach(b=>{
+    b.classList.toggle("active", b.textContent.toLowerCase()===p.replace("mo","m").replace("1y","1y"));
+  });
+  _curPeriod = p;
+  await _loadChart(_curTicker, _curName, p);
 }
 
 async function openChart(ticker, name){
-  const displayName = name.replace(/&amp;/g,"&");
-  document.getElementById("chart-title").textContent = `📈 ${displayName} — 技術分析`;
+  _curTicker = ticker;
+  _curName   = name.replace(/&amp;/g,"&");
+  _curPeriod = "6mo";
+  document.querySelectorAll(".chart-period-btn").forEach(b=>{
+    b.classList.toggle("active", b.textContent==="6M");
+  });
   document.getElementById("chart-overlay").classList.add("open");
-  document.getElementById("chart-container").innerHTML = '<div class="loading">⏳ 載入圖表中…</div>';
-  document.getElementById("rsi-container").innerHTML   = "";
+  await _loadChart(ticker, _curName, "6mo");
+}
+
+async function _loadChart(ticker, displayName, period){
+  destroyCharts();
+  document.getElementById("chart-title").textContent = `📈 ${displayName}`;
+  document.getElementById("chart-price-bar").innerHTML = "";
+  document.getElementById("chart-analysis").innerHTML = '<div class="loading" style="font-size:.8rem;padding:20px 8px;text-align:center">⏳ 載入中…</div>';
+  ["chart-container","vol-container","macd-container","rsi-container"]
+    .forEach(id=>{ document.getElementById(id).innerHTML=""; });
 
   let d;
-  try{ d = await (await fetch(`/chart-data?ticker=${encodeURIComponent(ticker)}`)).json(); }
-  catch{ document.getElementById("chart-container").innerHTML='<div class="loading">⚠️ 圖表載入失敗</div>'; return; }
+  try{ d = await (await fetch(`/chart-data?ticker=${encodeURIComponent(ticker)}&period=${period}`)).json(); }
+  catch(e){ document.getElementById("chart-container").innerHTML=`<div class="loading">⚠️ 載入失敗: ${e.message}</div>`; return; }
   if(!d||!d.candles||!d.candles.length){
     document.getElementById("chart-container").innerHTML='<div class="loading">⚠️ 無圖表資料</div>'; return;
   }
 
-  // lightweight-charts v4
-  document.getElementById("chart-container").innerHTML="";
-  document.getElementById("rsi-container").innerHTML="";
-
   const LW = window.LightweightCharts;
-  const chartOpt = {
-    layout:{ background:{color:"#131722"}, textColor:"#d1d5db" },
-    grid:  { vertLines:{color:"#1f2937"}, horzLines:{color:"#1f2937"} },
-    timeScale:{ borderColor:"#374151", timeVisible:true },
-    rightPriceScale:{ borderColor:"#374151" },
+  const base = {
+    layout:{ background:{color:"#0d1117"}, textColor:"#8b949e" },
+    grid:  { vertLines:{color:"#161b22"}, horzLines:{color:"#161b22"} },
+    timeScale:{ borderColor:"#21262d", timeVisible:true, fixLeftEdge:true, fixRightEdge:true },
+    rightPriceScale:{ borderColor:"#21262d" },
     crosshair:{ mode:1 },
+    handleScroll:true, handleScale:true,
   };
 
-  // 主圖：K線 + MA + 成交量
-  _chartMain = LW.createChart(document.getElementById("chart-container"), {...chartOpt, height:340});
-  const candle = _chartMain.addCandlestickSeries({ upColor:"#26a69a", downColor:"#ef5350", borderVisible:false, wickUpColor:"#26a69a", wickDownColor:"#ef5350" });
+  // ── 主圖 K線 ──────────────────────────────────────────────────
+  _chartMain = LW.createChart(document.getElementById("chart-container"), {...base, height:270});
+  const candle = _chartMain.addCandlestickSeries({
+    upColor:"#26a69a", downColor:"#ef5350",
+    borderVisible:false, wickUpColor:"#26a69a", wickDownColor:"#ef5350"
+  });
   candle.setData(d.candles);
-
-  const vol = _chartMain.addHistogramSeries({ priceFormat:{type:"volume"}, priceScaleId:"vol", scaleMargins:{top:0.8,bottom:0} });
-  vol.setData(d.volumes||[]);
-
-  if(d.ma5.length)  { const s=_chartMain.addLineSeries({color:"#26a69a",lineWidth:1,priceLineVisible:false}); s.setData(d.ma5); }
-  if(d.ma20.length) { const s=_chartMain.addLineSeries({color:"#f59e0b",lineWidth:1,priceLineVisible:false}); s.setData(d.ma20); }
-  if(d.ma60.length) { const s=_chartMain.addLineSeries({color:"#a78bfa",lineWidth:1.5,priceLineVisible:false}); s.setData(d.ma60); }
-
+  if(d.ma5&&d.ma5.length)  { const s=_chartMain.addLineSeries({color:"#26a69a",lineWidth:1,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma5); }
+  if(d.ma20&&d.ma20.length) { const s=_chartMain.addLineSeries({color:"#f59e0b",lineWidth:1,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma20); }
+  if(d.ma60&&d.ma60.length) { const s=_chartMain.addLineSeries({color:"#a78bfa",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma60); }
   _chartMain.timeScale().fitContent();
 
-  // RSI 圖
-  if(d.rsi&&d.rsi.length){
-    _chartRsi = LW.createChart(document.getElementById("rsi-container"), {...chartOpt, height:120});
-    const rsiSeries = _chartRsi.addLineSeries({color:"#60a5fa",lineWidth:1.5,priceLineVisible:false});
-    rsiSeries.setData(d.rsi);
-    // 超買70 / 超賣30 參考線
-    const ob = _chartRsi.addLineSeries({color:"#ef5350",lineWidth:1,lineStyle:2,priceLineVisible:false});
-    ob.setData(d.rsi.map(p=>({time:p.time,value:70})));
-    const os = _chartRsi.addLineSeries({color:"#22c55e",lineWidth:1,lineStyle:2,priceLineVisible:false});
-    os.setData(d.rsi.map(p=>({time:p.time,value:30})));
-    _chartRsi.timeScale().fitContent();
+  // ── 成交量圖 ──────────────────────────────────────────────────
+  _chartVol = LW.createChart(document.getElementById("vol-container"), {...base, height:70,
+    rightPriceScale:{...base.rightPriceScale, scaleMargins:{top:0.1,bottom:0}}});
+  const volS = _chartVol.addHistogramSeries({priceFormat:{type:"volume"}});
+  volS.setData(d.volumes||[]);
+  _chartVol.timeScale().fitContent();
+
+  // ── MACD 圖 ──────────────────────────────────────────────────
+  _chartMacd = LW.createChart(document.getElementById("macd-container"), {...base, height:110});
+  if(d.macd_hist&&d.macd_hist.length){
+    const histS = _chartMacd.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
+    histS.setData(d.macd_hist);
   }
+  if(d.macd_dif&&d.macd_dif.length){
+    const difS = _chartMacd.addLineSeries({color:"#60a5fa",lineWidth:1.2,priceLineVisible:false,lastValueVisible:false});
+    difS.setData(d.macd_dif);
+  }
+  if(d.macd_dea&&d.macd_dea.length){
+    const deaS = _chartMacd.addLineSeries({color:"#f97316",lineWidth:1.2,priceLineVisible:false,lastValueVisible:false});
+    deaS.setData(d.macd_dea);
+  }
+  _chartMacd.timeScale().fitContent();
+
+  // ── RSI 圖 ───────────────────────────────────────────────────
+  _chartRsi = LW.createChart(document.getElementById("rsi-container"), {...base, height:90});
+  if(d.rsi&&d.rsi.length){
+    const rsiS = _chartRsi.addLineSeries({color:"#c084fc",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false});
+    rsiS.setData(d.rsi);
+    [[70,"#ef5350"],[30,"#22c55e"]].forEach(([val,col])=>{
+      const ref = _chartRsi.addLineSeries({color:col,lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false});
+      ref.setData(d.rsi.map(p=>({time:p.time,value:val})));
+    });
+  }
+  _chartRsi.timeScale().fitContent();
+
+  // 同步 timescale
+  const charts = [_chartMain, _chartVol, _chartMacd, _chartRsi];
+  charts.forEach((c,i)=>{
+    c.timeScale().subscribeVisibleLogicalRangeChange(range=>{
+      if(!range) return;
+      charts.forEach((oc,j)=>{ if(i!==j) oc.timeScale().setVisibleLogicalRange(range); });
+    });
+  });
+
+  // ── 上方價格列 ───────────────────────────────────────────────
+  const last = d.candles[d.candles.length-1];
+  const prev = d.candles.length>1 ? d.candles[d.candles.length-2].close : last.close;
+  const chg  = last.close - prev;
+  const pct  = prev ? chg/prev*100 : 0;
+  const cls  = chg>=0 ? "ap-bull" : "ap-bear";
+  const arr  = chg>=0 ? "▲" : "▼";
+  const sm   = d.summary||{};
+  const volFmt = v => v>=1e8?`${(v/1e8).toFixed(1)}億`:v>=1e4?`${(v/1e4).toFixed(0)}萬`:v?.toLocaleString()||"--";
+  document.getElementById("chart-price-bar").innerHTML = `
+    <span class="cph-price">${last.close.toLocaleString()}</span>
+    <span class="cph-chg ${cls}">${arr} ${Math.abs(chg).toFixed(2)} (${pct>=0?"+":""}${pct.toFixed(2)}%)</span>
+    <span class="cph-vol">量 ${volFmt(sm.last_vol)}</span>`;
+
+  // ── 右側分析面板 ──────────────────────────────────────────────
+  renderAnalysis(d);
+}
+
+function renderAnalysis(d){
+  const s = d.summary||{};
+  const fv = v => v!=null ? v.toLocaleString() : "--";
+  const fp = v => v!=null ? `${v>=0?"+":""}${v.toFixed(2)}%` : "--";
+  const pc = v => v==null?"ap-flat":v>=0?"ap-bull":"ap-bear";
+
+  const tagHtml = (txt, cls) => `<span class="ap-tag ${cls}">${txt}</span>`;
+
+  document.getElementById("chart-analysis").innerHTML = `
+  <div class="ap-card">
+    <div class="ap-card-title">趨勢分析</div>
+    <div class="ap-row">
+      <span class="ap-label">趨勢方向</span>
+      ${tagHtml(s.trend||"--", s.trend_cls||"flat")}
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">MA5</span>
+      <span class="ap-val ap-bull">${fv(s.ma5)} <small>${s.ma5_dir||""}</small></span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">MA20</span>
+      <span class="ap-val ap-warn">${fv(s.ma20)}</span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">MA60</span>
+      <span class="ap-val ap-flat" style="color:#a78bfa">${fv(s.ma60)}</span>
+    </div>
+  </div>
+  <div class="ap-card">
+    <div class="ap-card-title">動能指標</div>
+    <div class="ap-row">
+      <span class="ap-label">RSI(14)</span>
+      ${tagHtml(s.rsi||"--", s.rsi_cls||"flat")}
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">MACD</span>
+      ${tagHtml(s.macd||"--", s.macd_cls||"flat")}
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">DIF</span>
+      <span class="ap-val ${s.dif!=null&&s.dif>=0?"ap-bull":"ap-bear"}">${s.dif!=null?s.dif.toFixed(3):"--"}</span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">DEA</span>
+      <span class="ap-val ap-flat">${s.dea!=null?s.dea.toFixed(3):"--"}</span>
+    </div>
+  </div>
+  <div class="ap-card">
+    <div class="ap-card-title">漲跌表現</div>
+    <div class="ap-row">
+      <span class="ap-label">近 5 日</span>
+      <span class="ap-val ${pc(s.chg5)}">${fp(s.chg5)}</span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">近 1 月</span>
+      <span class="ap-val ${pc(s.chg20)}">${fp(s.chg20)}</span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">近 3 月</span>
+      <span class="ap-val ${pc(s.chg60)}">${fp(s.chg60)}</span>
+    </div>
+  </div>
+  <div class="ap-card">
+    <div class="ap-card-title">區間高低</div>
+    <div class="ap-row">
+      <span class="ap-label">期間高點</span>
+      <span class="ap-val ap-bear">${fv(s.high6m)}</span>
+    </div>
+    <div class="ap-row">
+      <span class="ap-label">期間低點</span>
+      <span class="ap-val ap-bull">${fv(s.low6m)}</span>
+    </div>
+  </div>`;
 }
 
 load(); loadHouse(); loadCal(); tick();
@@ -1237,12 +1574,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type","text/plain")
             self.end_headers(); self.wfile.write(b"ok")
-        elif self.path.startswith("/chart-data?"):
+        elif self.path.startswith("/chart-data"):
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             ticker = qs.get("ticker", [""])[0].strip()
+            period = qs.get("period", ["6mo"])[0].strip()
+            if period not in ("1mo","3mo","6mo","1y"):
+                period = "6mo"
             if ticker:
-                payload = json.dumps(get_chart_data(ticker) or {}).encode()
+                payload = safe_json(get_chart_data(ticker, period) or {}).encode()
             else:
                 payload = b"{}"
             self.send_response(200)
