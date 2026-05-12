@@ -140,17 +140,36 @@ def roc_to_date(s):
 
 EXCLUDE_NOTES = ["親友", "特殊關係", "員工", "共有人", "非常規", "無法核實"]
 
+def _download_zip_bytes(url, timeout=90):
+    """下載 ZIP，自動繞過台灣政府網站的非標準 SSL 憑證。"""
+    import ssl, urllib.request as _ureq
+    # 方法 1：requests verify=False
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        resp = requests.get(url, timeout=timeout, verify=False,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        return resp.content
+    except Exception as e1:
+        print(f"[房價] requests 失敗，改用 urllib: {e1}")
+    # 方法 2：urllib + 完全關閉 SSL 驗證
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    req = _ureq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with _ureq.urlopen(req, context=ctx, timeout=timeout) as resp:
+        return resp.read()
+
 def fetch_house_prices():
     """下載內政部實價登錄，回傳台南透天厝分析資料（已過濾異常交易）。"""
     last_err = ""
     for attempt in range(1, 3):  # 最多重試 2 次
         try:
             print(f"[房價] 開始下載（第 {attempt} 次）…")
-            r = requests.get(HOUSE_DATA_URL, timeout=90, verify=False,
-                             headers={"User-Agent": "Mozilla/5.0 (compatible)"})
-            r.raise_for_status()
-            print(f"[房價] 下載完成，大小 {len(r.content)//1024} KB")
-            z = zipfile.ZipFile(io.BytesIO(r.content))
+            raw_zip = _download_zip_bytes(HOUSE_DATA_URL)
+            print(f"[房價] 下載完成，大小 {len(raw_zip)//1024} KB")
+            z = zipfile.ZipFile(io.BytesIO(raw_zip))
             # 列出 ZIP 內所有檔名，方便 debug
             names = z.namelist()
             print(f"[房價] ZIP 內容: {names}")
