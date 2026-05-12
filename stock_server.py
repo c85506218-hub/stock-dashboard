@@ -146,7 +146,7 @@ def fetch_house_prices():
     for attempt in range(1, 3):  # 最多重試 2 次
         try:
             print(f"[房價] 開始下載（第 {attempt} 次）…")
-            r = requests.get(HOUSE_DATA_URL, timeout=90,
+            r = requests.get(HOUSE_DATA_URL, timeout=90, verify=False,
                              headers={"User-Agent": "Mozilla/5.0 (compatible)"})
             r.raise_for_status()
             print(f"[房價] 下載完成，大小 {len(r.content)//1024} KB")
