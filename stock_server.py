@@ -142,19 +142,47 @@ EXCLUDE_NOTES = ["親友", "特殊關係", "員工", "共有人", "非常規", "
 
 def fetch_house_prices():
     """下載內政部實價登錄，回傳台南透天厝分析資料（已過濾異常交易）。"""
-    try:
-        r = requests.get(HOUSE_DATA_URL, timeout=30,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        z = zipfile.ZipFile(io.BytesIO(r.content))
-        with z.open(HOUSE_CITY_FILE) as f:
-            lines = f.read().decode("utf-8-sig").splitlines()
-    except Exception as e:
-        print(f"[房價] 下載失敗: {e}")
-        return None
+    last_err = ""
+    for attempt in range(1, 3):  # 最多重試 2 次
+        try:
+            print(f"[房價] 開始下載（第 {attempt} 次）…")
+            r = requests.get(HOUSE_DATA_URL, timeout=90,
+                             headers={"User-Agent": "Mozilla/5.0 (compatible)"})
+            r.raise_for_status()
+            print(f"[房價] 下載完成，大小 {len(r.content)//1024} KB")
+            z = zipfile.ZipFile(io.BytesIO(r.content))
+            # 列出 ZIP 內所有檔名，方便 debug
+            names = z.namelist()
+            print(f"[房價] ZIP 內容: {names}")
+            # 嘗試精確檔名，找不到則用包含 'd_lvr_land_a' 的第一個
+            target_file = HOUSE_CITY_FILE if HOUSE_CITY_FILE in names else next(
+                (n for n in names if "d_lvr_land_a" in n.lower()), None)
+            if not target_file:
+                raise FileNotFoundError(f"{HOUSE_CITY_FILE} 不在 ZIP 內（{names}）")
+            with z.open(target_file) as f:
+                raw = f.read()
+            # 嘗試 utf-8-sig，失敗則用 big5
+            try:
+                lines = raw.decode("utf-8-sig").splitlines()
+            except UnicodeDecodeError:
+                lines = raw.decode("big5", errors="replace").splitlines()
+            break  # 成功，跳出重試迴圈
+        except Exception as e:
+            last_err = str(e)
+            print(f"[房價] 第 {attempt} 次失敗: {e}")
+            if attempt < 2:
+                time.sleep(5)
+    else:
+        print(f"[房價] 全部重試失敗: {last_err}")
+        return {"error": f"資料下載失敗：{last_err}", "records": [], "overall": None}
 
-    headers = lines[0].split(",")
-    rows = list(csv.DictReader(lines[2:], fieldnames=headers))
+    try:
+        headers_csv = lines[0].split(",")
+        rows = list(csv.DictReader(lines[2:], fieldnames=headers_csv))
+        print(f"[房價] CSV 共 {len(rows)} 筆，欄位: {headers_csv[:5]}")
+    except Exception as e:
+        print(f"[房價] CSV 解析失敗: {e}")
+        return {"error": f"CSV 解析失敗：{e}", "records": [], "overall": None}
 
     records, excluded = [], []
     for row in rows:
@@ -229,8 +257,9 @@ def fetch_house_prices():
             "sale591_url":    sale591_url,
         })
 
+    print(f"[房價] 有效透天厝 {len(records)} 筆，已過濾 {len(excluded)} 筆")
     if not records:
-        return None
+        return {"error": "無符合條件的透天厝交易資料", "records": [], "overall": None}
 
     records.sort(key=lambda x: x["date"], reverse=True)
 
@@ -365,10 +394,10 @@ def get_calendar():
 def get_house_data():
     now = time.time()
     with _cache_lock:
-        if _house_cache["data"] and now - _house_cache["ts"] < HOUSE_CACHE_SECONDS:
+        if _house_cache["data"] is not None and now - _house_cache["ts"] < HOUSE_CACHE_SECONDS:
             return _house_cache["data"]
         data = fetch_house_prices()
-        if data:
+        if data is not None:
             _house_cache["data"] = data
             _house_cache["ts"]   = now
         return _house_cache["data"]
