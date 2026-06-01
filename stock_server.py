@@ -126,6 +126,34 @@ def fetch_news(ticker, max_items=3):
     except Exception:
         return []
 
+# ── 買賣訊號 ───────────────────────────────────────────────────────────────────
+def fetch_signal(ticker):
+    """計算買賣訊號：價格 > 20MA 且 > 5日前收盤 → BUY，兩者皆否 → SELL，其一 → HOLD"""
+    try:
+        hist = yf.Ticker(ticker).history(period="35d")["Close"]
+        if len(hist) < 22:
+            return {"signal": "N/A"}
+        price    = float(hist.iloc[-1])
+        ma20     = float(hist.iloc[-20:].mean())
+        prev5    = float(hist.iloc[-6])
+        above_ma = price > ma20
+        above_5d = price > prev5
+        if above_ma and above_5d:
+            signal = "BUY"
+        elif above_ma or above_5d:
+            signal = "HOLD"
+        else:
+            signal = "SELL"
+        return {
+            "signal":   signal,
+            "ma20":     round(ma20, 2),
+            "prev5":    round(prev5, 2),
+            "above_ma": above_ma,
+            "above_5d": above_5d,
+        }
+    except Exception:
+        return {"signal": "N/A"}
+
 # ── 台南透天厝房價 ─────────────────────────────────────────────────────────────
 def roc_to_date(s):
     """民國年月日(如1150311) → '2026-03-11'"""
@@ -433,26 +461,31 @@ def get_all_data():
                 "commentary": build_commentary(_data_cache["quotes"]),
             }
 
-        quotes, news = [], {}
-        with ThreadPoolExecutor(max_workers=12) as ex:
-            q_fut = {ex.submit(fetch_quote, *row): row[0] for row in WATCHLIST}
-            n_fut = {ex.submit(fetch_news,  row[0]): row[0] for row in WATCHLIST}
+        quotes, news, signals = [], {}, {}
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            q_fut = {ex.submit(fetch_quote,  *row):   row[0] for row in WATCHLIST}
+            n_fut = {ex.submit(fetch_news,   row[0]): row[0] for row in WATCHLIST}
+            s_fut = {ex.submit(fetch_signal, row[0]): row[0] for row in WATCHLIST}
             for f in as_completed(q_fut):
                 quotes.append(f.result())
             for f in as_completed(n_fut):
                 news[n_fut[f]] = f.result()
+            for f in as_completed(s_fut):
+                signals[s_fut[f]] = f.result()
 
         order = [row[0] for row in WATCHLIST]
         quotes.sort(key=lambda q: order.index(q["ticker"]))
 
-        _data_cache["quotes"] = quotes
-        _data_cache["news"]   = news
-        _data_cache["ts"]     = now
+        _data_cache["quotes"]  = quotes
+        _data_cache["news"]    = news
+        _data_cache["signals"] = signals
+        _data_cache["ts"]      = now
 
     return {
-        "updated": datetime.now().isoformat(),
-        "quotes":  quotes,
-        "news":    news,
+        "updated":    datetime.now().isoformat(),
+        "quotes":     quotes,
+        "news":       news,
+        "signals":    _data_cache.get("signals", {}),
         "commentary": build_commentary(quotes),
     }
 
@@ -757,16 +790,23 @@ function render(data){
 
     html += `<div class="section">
 <div class="section-title">${sec}<span class="badge ${bc}">${bl}</span></div>
-<table><thead><tr><th>名稱</th><th>最新價</th><th>漲跌</th><th>漲跌幅</th></tr></thead><tbody>`;
+<table><thead><tr><th>名稱</th><th>最新價</th><th>漲跌</th><th>漲跌幅</th><th>訊號</th></tr></thead><tbody>`;
 
+    const signals = data.signals || {};
     for(const q of items){
       const c = cls(q.change), cu = CUR[q.currency]||"";
       const note = ai[q.name]||"";
+      const sig = signals[q.ticker] || {};
+      const sigLabel = {"BUY":"🟢 買進","HOLD":"🟡 觀望","SELL":"🔴 賣出","N/A":"⚪"}[sig.signal||"N/A"]||"⚪";
+      const sigTip = sig.signal && sig.signal!=="N/A"
+        ? `MA20:${sig.ma20} ${sig.above_ma?"✓":"✗"}  5日前:${sig.prev5} ${sig.above_5d?"✓":"✗"}`
+        : "資料不足";
       html += `<tr>
 <td class="name">${q.name}${note?`<div class="note">💬 ${note}</div>`:""}</td>
 <td class="price">${q.error?"--":cu+fmt(q.price)}</td>
 <td class="${c}">${q.error?"--":arr(q.change)+" "+sgn(q.change)+fmt(q.change)}</td>
 <td class="${c}">${q.error?"--":sgn(q.change_pct)+fmt(q.change_pct)+"%"}</td>
+<td title="${sigTip}" style="font-size:.82rem;text-align:center">${q.error?"--":sigLabel}</td>
 </tr>`;
     }
     html += `</tbody></table>`;
