@@ -127,29 +127,62 @@ def fetch_news(ticker, max_items=3):
         return []
 
 # ── 買賣訊號 ───────────────────────────────────────────────────────────────────
+def _calc_rsi(closes, period=14):
+    """計算 RSI（相對強弱指標）"""
+    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    gains  = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 1)
+
 def fetch_signal(ticker):
-    """計算買賣訊號：價格 > 20MA 且 > 5日前收盤 → BUY，兩者皆否 → SELL，其一 → HOLD"""
+    """
+    買賣訊號三條件：
+      1. 價格 > MA20（趨勢向上）
+      2. 價格 > 5日前收盤（近期有動能）
+      3. RSI 在 50~70 之間（健康上漲，非追高）
+    全部成立 → BUY；RSI>70 → HOT（過熱勿追）；其餘 → HOLD / SELL
+    """
     try:
-        hist = yf.Ticker(ticker).history(period="35d")["Close"]
+        hist = yf.Ticker(ticker).history(period="60d")["Close"]
         if len(hist) < 22:
             return {"signal": "N/A"}
-        price    = float(hist.iloc[-1])
-        ma20     = float(hist.iloc[-20:].mean())
-        prev5    = float(hist.iloc[-6])
+        closes   = [float(x) for x in hist]
+        price    = closes[-1]
+        ma20     = sum(closes[-20:]) / 20
+        prev5    = closes[-6]
+        rsi      = _calc_rsi(closes) if len(closes) >= 16 else None
         above_ma = price > ma20
         above_5d = price > prev5
-        if above_ma and above_5d:
+        rsi_ok   = 50 <= rsi <= 70 if rsi is not None else False
+        rsi_hot  = rsi is not None and rsi > 70
+
+        if above_ma and above_5d and rsi_hot:
+            signal = "HOT"       # 條件符合但過熱，不建議追
+        elif above_ma and above_5d and rsi_ok:
             signal = "BUY"
+        elif above_ma and above_5d:
+            signal = "HOLD"      # 動能到但RSI偏低，觀察
         elif above_ma or above_5d:
             signal = "HOLD"
         else:
             signal = "SELL"
+
         return {
             "signal":   signal,
             "ma20":     round(ma20, 2),
             "prev5":    round(prev5, 2),
+            "rsi":      rsi,
             "above_ma": above_ma,
             "above_5d": above_5d,
+            "rsi_ok":   rsi_ok,
         }
     except Exception:
         return {"signal": "N/A"}
@@ -797,9 +830,11 @@ function render(data){
       const c = cls(q.change), cu = CUR[q.currency]||"";
       const note = ai[q.name]||"";
       const sig = signals[q.ticker] || {};
-      const sigLabel = {"BUY":"🟢 買進","HOLD":"🟡 觀望","SELL":"🔴 賣出","N/A":"⚪"}[sig.signal||"N/A"]||"⚪";
+      const sigMap = {"BUY":"🟢 買進","HOLD":"🟡 觀望","SELL":"🔴 賣出","HOT":"🔥 過熱","N/A":"⚪"};
+      const sigLabel = sigMap[sig.signal||"N/A"]||"⚪";
+      const rsiStr = sig.rsi != null ? `RSI:${sig.rsi} ${sig.rsi>70?"⚠️過熱":sig.rsi>=50?"✓":"↓偏低"}` : "";
       const sigTip = sig.signal && sig.signal!=="N/A"
-        ? `MA20:${sig.ma20} ${sig.above_ma?"✓":"✗"}  5日前:${sig.prev5} ${sig.above_5d?"✓":"✗"}`
+        ? `MA20:${sig.ma20} ${sig.above_ma?"✓":"✗"}  5日前:${sig.prev5} ${sig.above_5d?"✓":"✗"}  ${rsiStr}`
         : "資料不足";
       html += `<tr>
 <td class="name">${q.name}${note?`<div class="note">💬 ${note}</div>`:""}</td>
