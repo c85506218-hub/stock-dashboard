@@ -144,32 +144,37 @@ def _calc_rsi(closes, period=14):
 
 def fetch_signal(ticker):
     """
-    買賣訊號三條件：
+    買賣訊號四條件：
       1. 價格 > MA20（趨勢向上）
       2. 價格 > 5日前收盤（近期有動能）
       3. RSI 在 50~70 之間（健康上漲，非追高）
-    全部成立 → BUY；RSI>70 → HOT（過熱勿追）；其餘 → HOLD / SELL
+      4. 今日成交量 > 10日均量 × 1.2（有真實買盤）
+    全部成立 → BUY；RSI>70 → HOT；量不足 → HOLD；其餘 → SELL
     """
     try:
-        hist = yf.Ticker(ticker).history(period="60d")["Close"]
-        if len(hist) < 22:
+        raw      = yf.Ticker(ticker).history(period="60d")
+        if len(raw) < 22:
             return {"signal": "N/A"}
-        closes   = [float(x) for x in hist]
+        closes   = [float(x) for x in raw["Close"]]
+        volumes  = [float(x) for x in raw["Volume"]]
         price    = closes[-1]
         ma20     = sum(closes[-20:]) / 20
         prev5    = closes[-6]
         rsi      = _calc_rsi(closes) if len(closes) >= 16 else None
-        above_ma = price > ma20
-        above_5d = price > prev5
-        rsi_ok   = 50 <= rsi <= 70 if rsi is not None else False
-        rsi_hot  = rsi is not None and rsi > 70
+        vol_today = volumes[-1]
+        vol_ma10  = sum(volumes[-11:-1]) / 10   # 今日前10日均量
+        above_ma  = price > ma20
+        above_5d  = price > prev5
+        rsi_ok    = 50 <= rsi <= 70 if rsi is not None else False
+        rsi_hot   = rsi is not None and rsi > 70
+        vol_ok    = vol_today >= vol_ma10 * 1.2
 
         if above_ma and above_5d and rsi_hot:
-            signal = "HOT"       # 條件符合但過熱，不建議追
+            signal = "HOT"       # 漲太多，不建議追高
+        elif above_ma and above_5d and rsi_ok and vol_ok:
+            signal = "BUY"       # 四個條件全中，訊號最強
         elif above_ma and above_5d and rsi_ok:
-            signal = "BUY"
-        elif above_ma and above_5d:
-            signal = "HOLD"      # 動能到但RSI偏低，觀察
+            signal = "HOLD"      # 量能不足，等放量再進
         elif above_ma or above_5d:
             signal = "HOLD"
         else:
@@ -180,9 +185,11 @@ def fetch_signal(ticker):
             "ma20":     round(ma20, 2),
             "prev5":    round(prev5, 2),
             "rsi":      rsi,
+            "vol_ratio": round(vol_today / vol_ma10, 2) if vol_ma10 > 0 else None,
             "above_ma": above_ma,
             "above_5d": above_5d,
             "rsi_ok":   rsi_ok,
+            "vol_ok":   vol_ok,
         }
     except Exception:
         return {"signal": "N/A"}
@@ -833,8 +840,9 @@ function render(data){
       const sigMap = {"BUY":"🟢 買進","HOLD":"🟡 觀望","SELL":"🔴 賣出","HOT":"🔥 過熱","N/A":"⚪"};
       const sigLabel = sigMap[sig.signal||"N/A"]||"⚪";
       const rsiStr = sig.rsi != null ? `RSI:${sig.rsi} ${sig.rsi>70?"⚠️過熱":sig.rsi>=50?"✓":"↓偏低"}` : "";
+      const volStr = sig.vol_ratio != null ? `量比:${sig.vol_ratio}x ${sig.vol_ok?"✓":"✗量能不足"}` : "";
       const sigTip = sig.signal && sig.signal!=="N/A"
-        ? `MA20:${sig.ma20} ${sig.above_ma?"✓":"✗"}  5日前:${sig.prev5} ${sig.above_5d?"✓":"✗"}  ${rsiStr}`
+        ? `MA20:${sig.ma20} ${sig.above_ma?"✓":"✗"}  5日前:${sig.prev5} ${sig.above_5d?"✓":"✗"}  ${rsiStr}  ${volStr}`
         : "資料不足";
       html += `<tr>
 <td class="name">${q.name}${note?`<div class="note">💬 ${note}</div>`:""}</td>
