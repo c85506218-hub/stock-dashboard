@@ -599,6 +599,48 @@ tr:hover td { background: #1d2338; }
 .news-meta { font-size: .64rem; color: #374151; margin-top: 2px; }
 .loading { text-align: center; padding: 40px; color: #475569; font-size: .9rem; }
 
+/* ── 停損提示區塊 ── */
+.sl-wrap { margin-top: 28px; }
+.sl-title { font-size: .78rem; font-weight: 700; color: #f8fafc; margin-bottom: 14px; }
+.sl-form {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  background: #161b27; border: 1px solid #252d42; border-radius: 14px;
+  padding: 16px 20px; margin-bottom: 16px;
+}
+.sl-field { display: flex; flex-direction: column; gap: 5px; }
+.sl-label { font-size: .68rem; color: #64748b; font-weight: 600; letter-spacing: .05em; }
+.sl-input {
+  background: #0d1117; border: 1px solid #2d3748; border-radius: 8px;
+  color: #f1f5f9; font-size: .85rem; padding: 7px 12px; width: 130px; outline: none;
+}
+.sl-input:focus { border-color: #3b82f6; }
+.sl-btn {
+  background: #1d4ed8; color: #fff; border: none; border-radius: 8px;
+  padding: 8px 18px; font-size: .82rem; font-weight: 600; cursor: pointer;
+}
+.sl-btn:hover { background: #2563eb; }
+.sl-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.sl-card {
+  background: #161b27; border: 1px solid #252d42; border-radius: 14px;
+  padding: 14px 18px; position: relative;
+}
+.sl-card.danger  { border-color: #7f1d1d; background: #1a0a0a; }
+.sl-card.warning { border-color: #78350f; background: #150f00; }
+.sl-card.profit  { border-color: #14532d; background: #0a1a0e; }
+.sl-card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.sl-name { font-size: .9rem; font-weight: 600; color: #f1f5f9; }
+.sl-status { font-size: .8rem; font-weight: 700; }
+.sl-status.danger  { color: #f87171; }
+.sl-status.warning { color: #fbbf24; }
+.sl-status.profit  { color: #4ade80; }
+.sl-details { font-size: .75rem; color: #64748b; line-height: 1.9; }
+.sl-details span { color: #94a3b8; }
+.sl-del { position: absolute; top: 10px; right: 14px; background: none; border: none;
+  color: #374151; font-size: .8rem; cursor: pointer; }
+.sl-del:hover { color: #f87171; }
+.sl-bar-wrap { margin-top: 10px; height: 5px; background: #1e2438; border-radius: 3px; overflow: hidden; }
+.sl-bar { height: 100%; border-radius: 3px; transition: width .3s; }
+
 /* ── 房價區塊 ── */
 .house-wrap { margin-top: 28px; }
 .house-title {
@@ -727,6 +769,31 @@ tr:hover td { background: #1d2338; }
 <div id="ai-market"><strong>📊 今日市場概況</strong><span id="ai-text">分析中…</span></div>
 <div class="grid" id="grid"><div class="loading">⏳ 正在抓取最新股價與新聞…</div></div>
 
+<!-- 停損提示區塊 -->
+<div class="sl-wrap">
+  <div class="sl-title">🛡️ 停損提示</div>
+  <div class="sl-form">
+    <div class="sl-field">
+      <span class="sl-label">股票代號</span>
+      <input class="sl-input" id="sl-ticker" placeholder="例：2330.TW" style="width:110px">
+    </div>
+    <div class="sl-field">
+      <span class="sl-label">買進價格</span>
+      <input class="sl-input" id="sl-buy" type="number" placeholder="例：1000" style="width:110px">
+    </div>
+    <div class="sl-field">
+      <span class="sl-label">停損幅度 %</span>
+      <input class="sl-input" id="sl-pct" type="number" value="7" style="width:80px">
+    </div>
+    <div class="sl-field">
+      <span class="sl-label">備註（選填）</span>
+      <input class="sl-input" id="sl-note" placeholder="例：定期定額" style="width:130px">
+    </div>
+    <button class="sl-btn" onclick="slAdd()">➕ 新增</button>
+  </div>
+  <div class="sl-list" id="sl-list"></div>
+</div>
+
 <!-- 行事曆區塊 -->
 <div class="cal-wrap">
   <div class="cal-title">📅 重要行事曆</div>
@@ -810,6 +877,7 @@ function renderTicker(data){
 
 function render(data){
   renderTicker(data);
+  slUpdatePrices(data.quotes||[]);
   document.getElementById("ai-text").textContent = (data.commentary||{}).market_summary||"";
   const ai    = (data.commentary||{}).stocks||{};
   const news  = data.news||{};
@@ -1000,7 +1068,109 @@ async function loadCal(){
   catch{ document.getElementById("cal-grid").innerHTML=`<div class="loading">⚠️ 行事曆載入失敗</div>`; }
 }
 
+// ── 停損提示 ────────────────────────────────────────────────────────────────
+let _slQuotes = [];
+let _slEntries = JSON.parse(localStorage.getItem("sl_entries")||"[]");
+
+function slSave(){ localStorage.setItem("sl_entries", JSON.stringify(_slEntries)); }
+
+function slAdd(){
+  const ticker = document.getElementById("sl-ticker").value.trim().toUpperCase();
+  const buy    = parseFloat(document.getElementById("sl-buy").value);
+  const pct    = parseFloat(document.getElementById("sl-pct").value) || 7;
+  const note   = document.getElementById("sl-note").value.trim();
+  if(!ticker || isNaN(buy) || buy <= 0){ alert("請輸入股票代號與買進價格"); return; }
+  _slEntries.push({ ticker, buy, pct, note, addedAt: new Date().toLocaleDateString("zh-TW") });
+  slSave();
+  document.getElementById("sl-ticker").value = "";
+  document.getElementById("sl-buy").value = "";
+  document.getElementById("sl-note").value = "";
+  slRender();
+}
+
+function slDel(i){
+  _slEntries.splice(i, 1);
+  slSave(); slRender();
+}
+
+function slRender(){
+  const list = document.getElementById("sl-list");
+  if(!_slEntries.length){
+    list.innerHTML = `<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未新增任何持股。輸入買進價格後點「新增」即可追蹤停損。</div>`;
+    return;
+  }
+  // 用最新報價比對
+  const priceMap = {};
+  for(const q of _slQuotes) priceMap[q.ticker] = q;
+
+  list.innerHTML = _slEntries.map((e, i) => {
+    const q      = priceMap[e.ticker];
+    const cur    = q && !q.error ? q.price : null;
+    const slPrice = e.buy * (1 - e.pct / 100);
+    const tpPrice = e.buy * 1.15;  // 目標獲利 15% 參考線
+
+    let cardCls = "", status = "", statusCls = "", barColor = "", barW = 50;
+
+    if(cur === null){
+      status = "⚪ 等待報價"; statusCls = ""; cardCls = "";
+    } else {
+      const chgFromBuy = (cur - e.buy) / e.buy * 100;
+      const distToSL   = (cur - slPrice) / e.buy * 100;
+
+      if(cur <= slPrice){
+        status = `🚨 已跌破停損！現價 ${cur}，虧損 ${chgFromBuy.toFixed(1)}%`;
+        statusCls = "danger"; cardCls = "danger";
+        barColor = "#ef4444"; barW = 5;
+      } else if(distToSL < 3){
+        status = `⚠️ 接近停損！距停損價還差 ${distToSL.toFixed(1)}%`;
+        statusCls = "warning"; cardCls = "warning";
+        barColor = "#f59e0b"; barW = 20;
+      } else if(cur >= tpPrice){
+        status = `🎯 達到獲利目標！+${chgFromBuy.toFixed(1)}%`;
+        statusCls = "profit"; cardCls = "profit";
+        barColor = "#22c55e"; barW = 95;
+      } else if(chgFromBuy >= 0){
+        status = `✅ 獲利中 +${chgFromBuy.toFixed(1)}%`;
+        statusCls = "profit"; cardCls = "profit";
+        barColor = "#4ade80";
+        barW = Math.min(90, 50 + chgFromBuy * 3);
+      } else {
+        status = `📉 虧損中 ${chgFromBuy.toFixed(1)}%`;
+        statusCls = "warning"; cardCls = "";
+        barColor = "#f59e0b";
+        barW = Math.max(10, 50 + chgFromBuy * 3);
+      }
+    }
+
+    const curStr   = cur != null ? `NT$ ${cur.toLocaleString()}` : "載入中";
+    const slStr    = slPrice.toFixed(0);
+    const nameStr  = q ? q.name : e.ticker;
+
+    return `<div class="sl-card ${cardCls}">
+  <button class="sl-del" onclick="slDel(${i})">✕</button>
+  <div class="sl-card-top">
+    <div class="sl-name">${nameStr}</div>
+    <div class="sl-status ${statusCls}">${status}</div>
+  </div>
+  <div class="sl-details">
+    現價 <span>${curStr}</span>
+    買進 <span>NT$ ${e.buy.toLocaleString()}</span>
+    停損價 <span>NT$ ${slStr}（-${e.pct}%）</span>
+    ${e.note ? `<br>備註 <span>${e.note}</span>` : ""}
+    <br>新增日期 <span>${e.addedAt}</span>
+  </div>
+  <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
+</div>`;
+  }).join("");
+}
+
+function slUpdatePrices(quotes){
+  _slQuotes = quotes;
+  slRender();
+}
+
 load(); loadHouse(); loadCal(); tick();
+slRender();
 </script>
 </body>
 </html>
