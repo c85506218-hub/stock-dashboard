@@ -880,7 +880,7 @@ tr:hover td { background: #1d2338; }
 
 <script>
 const REFRESH  = 60;
-const SECTIONS = ["台股大盤","台股個股","美股大盤","美股個股"];
+const SECTIONS = ["台股大盤","台灣ETF－高息","台灣ETF－主題","台股－半導體","台股－電子製造","台股－金融","台股－傳產其他","美股大盤","美股－科技AI","美股－多元"];
 const CUR      = {NTD:"NT$", USD:"$"};
 let timer = REFRESH;
 
