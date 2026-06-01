@@ -109,7 +109,7 @@ SECTIONS_ORDER = [
 ]
 
 # ── 快取 ───────────────────────────────────────────────────────────────────────
-_data_cache  = {"quotes": [], "news": {}, "ts": 0}
+_data_cache  = {"quotes": [], "news": {}, "signals": {}, "ts": 0}
 _house_cache = {"data": None, "ts": 0}
 _cache_lock  = threading.Lock()
 
@@ -560,9 +560,10 @@ def get_all_data():
     with _cache_lock:
         if now - _data_cache["ts"] < DATA_CACHE_SECONDS:
             return {
-                "updated": datetime.now().isoformat(),
-                "quotes":  _data_cache["quotes"],
-                "news":    _data_cache["news"],
+                "updated":    datetime.now().isoformat(),
+                "quotes":     _data_cache["quotes"],
+                "news":       _data_cache["news"],
+                "signals":    _data_cache["signals"],
                 "commentary": build_commentary(_data_cache["quotes"]),
             }
 
