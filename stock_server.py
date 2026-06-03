@@ -943,6 +943,7 @@ _bg_cache = {
     "quotes":    [],
     "news":      {},
     "signals":   {},
+    "targets":   {},
     "theme":     [],
     "updated":   "",
     "ready":     False,
@@ -994,15 +995,68 @@ def _refresh_theme():
     except Exception as e:
         print(f"[BG] theme 更新失敗: {e}", flush=True)
 
+def calc_target_price(ticker, name):
+    """根據技術面每日自動計算目標買進價與說明。"""
+    try:
+        raw    = yf.Ticker(ticker).history(period="90d")
+        if len(raw) < 30:
+            return None
+        closes  = [float(x) for x in raw["Close"]]
+        price   = closes[-1]
+        ma20    = sum(closes[-20:]) / 20
+        ma60    = sum(closes[-60:]) / 60 if len(closes) >= 60 else ma20
+        # RSI
+        deltas  = [closes[i]-closes[i-1] for i in range(1, len(closes))]
+        gains   = [d if d > 0 else 0 for d in deltas]
+        losses  = [-d if d < 0 else 0 for d in deltas]
+        ag = sum(gains[:14]) / 14; al = sum(losses[:14]) / 14
+        for i in range(14, len(gains)):
+            ag = (ag*13+gains[i])/14; al = (al*13+losses[i])/14
+        rsi = round(100-(100/(1+ag/al)), 1) if al else 100.0
+
+        if rsi > 75:
+            target = round(ma20 * 0.97, 1)
+            reason = f"RSI {rsi} 嚴重過熱，等回測 MA20 下方 3% 再進"
+        elif rsi > 65:
+            target = round(ma20 * 0.99, 1)
+            reason = f"RSI {rsi} 偏熱，等回測 MA20 附近再進"
+        elif rsi >= 50:
+            target = round(price * 0.96, 1)
+            reason = f"RSI {rsi} 健康，等小回調 4% 進場"
+        elif rsi >= 40:
+            target = round(ma60 * 1.01, 1)
+            reason = f"RSI {rsi} 偏弱，等 MA60 反彈確認"
+        else:
+            target = round(ma60 * 0.98, 1)
+            reason = f"RSI {rsi} 超賣，等止跌訊號再進"
+
+        return {
+            "ticker": ticker, "name": name,
+            "target": target, "note": reason,
+            "price": round(price, 1), "ma20": round(ma20, 1),
+            "ma60": round(ma60, 1), "rsi": rsi,
+        }
+    except Exception:
+        return None
+
 def _refresh_signals():
     signals = {}
+    targets = {}
+    all_tickers = [(row[0], row[1]) for row in WATCHLIST] + \
+                  [(row[0], row[1]) for row in THEME_WATCHLIST]
     try:
         with ThreadPoolExecutor(max_workers=30) as ex:
-            futs = {ex.submit(fetch_signal, row[0]): row[0] for row in WATCHLIST}
-            for f in as_completed(futs):
-                signals[futs[f]] = f.result()
+            sig_futs = {ex.submit(fetch_signal, row[0]): row[0] for row in WATCHLIST}
+            tgt_futs = {ex.submit(calc_target_price, t, n): t for t, n in all_tickers}
+            for f in as_completed(sig_futs):
+                signals[sig_futs[f]] = f.result()
+            for f in as_completed(tgt_futs):
+                r = f.result()
+                if r:
+                    targets[tgt_futs[f]] = r
         with _bg_lock:
             _bg_cache["signals"] = signals
+            _bg_cache["targets"] = targets
     except Exception as e:
         print(f"[BG] signals 更新失敗: {e}", flush=True)
 
@@ -1811,16 +1865,18 @@ async function _loadChart(ticker, displayName, period){
   if(d.ma60&&d.ma60.length) { const s=_chartMain.addLineSeries({color:"#a78bfa",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma60); }
 
   // ── 目標買進價線 ──────────────────────────────────────────────
-  const wbEntry = (_wbEntries||[]).find(e=>e.ticker===ticker);
+  const targetPrice = getTargetForTicker(ticker);
   const slEntry = (_slEntries||[]).find(e=>e.ticker===ticker);
-  if(wbEntry && d.candles && d.candles.length){
+  if(targetPrice && d.candles && d.candles.length){
     const times = d.candles.map(c=>c.time);
+    const srv = _serverTargets[ticker];
+    const label = srv ? `🎯 目標 ${targetPrice}（RSI:${srv.rsi}）` : `🎯 目標買進 ${targetPrice}`;
     const targetLine = _chartMain.addLineSeries({
       color:"#22c55e", lineWidth:1.5, lineStyle:1,
       priceLineVisible:false, lastValueVisible:true,
-      title:`🎯 目標買進 $${wbEntry.target}`,
+      title: label,
     });
-    targetLine.setData(times.map(t=>({time:t, value:wbEntry.target})));
+    targetLine.setData(times.map(t=>({time:t, value:targetPrice})));
   }
   if(slEntry && d.candles && d.candles.length){
     const times = d.candles.map(c=>c.time);
@@ -2162,6 +2218,25 @@ async function loadTheme(){
 // ── 目標買進提示 ──────────────────────────────────────────────────────────────
 let _wbQuotes=[], _wbEntries=JSON.parse(localStorage.getItem("wb_entries")||"[]");
 
+// ── 每日目標買進價（從後端動態載入）──────────────────────────────────────────
+let _serverTargets = {};  // ticker → {target, note, rsi, ma20, ma60}
+
+async function loadTargets(){
+  try{
+    const data = await (await fetch("/targets")).json();
+    _serverTargets = data;
+    wbRender();  // 更新面板
+  } catch(e){ console.warn("targets載入失敗", e); }
+}
+
+// 相容舊版手動設定（若使用者有自訂則優先用自訂）
+function getTargetForTicker(ticker){
+  const manual = (_wbEntries||[]).find(e=>e.ticker===ticker);
+  if(manual) return manual.target;
+  const srv = _serverTargets[ticker];
+  return srv ? srv.target : null;
+}
+
 // 預設目標買進價（分析師建議，若尚未存在則自動加入）
 (function(){
   const defaults=[
@@ -2226,12 +2301,17 @@ function wbAdd(){
 function wbDel(i){_wbEntries.splice(i,1);wbSave();wbRender();}
 function wbRender(){
   const list=document.getElementById("wb-list");
-  if(!_wbEntries.length){
-    list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未設定目標買進價。</div>`;return;
+  // 合併：手動設定 + 伺服器目標（伺服器有但手動沒設的也顯示）
+  const srvList = Object.values(_serverTargets).filter(s=>
+    !_wbEntries.find(e=>e.ticker===s.ticker)
+  ).map(s=>({ticker:s.ticker, target:s.target, note:s.note, addedAt:"每日更新", _srv:true}));
+  const allEntries = [..._wbEntries, ...srvList];
+  if(!allEntries.length){
+    list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">載入中…</div>`;return;
   }
   const priceMap={};
   for(const q of _wbQuotes) priceMap[q.ticker]=q;
-  list.innerHTML=_wbEntries.map((e,i)=>{
+  list.innerHTML=allEntries.map((e,i)=>{
     const q=priceMap[e.ticker];
     const cur=q&&!q.error?q.price:null;
     const nameStr=q?q.name:e.ticker;
@@ -2256,10 +2336,12 @@ function wbRender(){
       }
     }
     const curStr=cur!=null?`$${cur.toLocaleString()}`:"載入中";
+    const delBtn = e._srv ? `` : `<button class="sl-del" onclick="wbDel(${i})">✕</button>`;
+    const badge = e._srv ? `<span style="font-size:.6rem;color:#475569;margin-left:6px">每日自動更新</span>` : "";
     return `<div class="sl-card ${cardCls}">
-  <button class="sl-del" onclick="wbDel(${i})">✕</button>
-  <div class="sl-card-top"><div class="sl-name">${nameStr}</div><div class="sl-status ${statusCls}">${status}</div></div>
-  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>$${e.target.toLocaleString()}</span>${e.note?`　備註 <span>${e.note}</span>`:""}　新增日期 <span>${e.addedAt}</span></div>
+  ${delBtn}
+  <div class="sl-card-top"><div class="sl-name">${nameStr}${badge}</div><div class="sl-status ${statusCls}">${status}</div></div>
+  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>$${e.target.toLocaleString()}</span>${e.note?`　<span style="color:#475569">${e.note}</span>`:""}　<span>${e.addedAt}</span></div>
   <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
 </div>`;
   }).join("");
@@ -2315,7 +2397,7 @@ function slRender(){
 }
 function slUpdatePrices(quotes){_slQuotes=quotes;slRender();}
 
-load(); loadHouse(); loadCal(); loadTheme(); loadArk(); tick();
+load(); loadHouse(); loadCal(); loadTheme(); loadArk(); loadTargets(); tick();
 wbRender(); slRender();
 // 延遲載入籌碼（不阻塞主要股價顯示）
 setTimeout(loadChips, 3000);
@@ -2348,6 +2430,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/calendar":
             payload = safe_json(get_calendar()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/targets":
+            with _bg_lock:
+                data = _bg_cache["targets"]
+            payload = safe_json(data).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
