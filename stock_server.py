@@ -142,6 +142,8 @@ SECTIONS_ORDER = [
 # ── 快取 ───────────────────────────────────────────────────────────────────────
 _data_cache  = {"quotes": [], "news": {}, "ts": 0}
 _house_cache = {"data": None, "ts": 0}
+_ark_cache   = {"data": None, "ts": 0}
+ARK_CACHE_SECONDS = 3600 * 6  # 6小時更新一次（ARK 每天收盤後更新）
 _cache_lock  = threading.Lock()
 
 # ── 規則式自動評語 ──────────────────────────────────────────────────────────────
@@ -277,6 +279,51 @@ def fetch_signal(ticker):
         }
     except Exception:
         return {"signal": "N/A"}
+
+# ── ARK Invest 持股 ────────────────────────────────────────────────────────────
+ARK_FUNDS = {
+    "ARKK": "ARK Innovation ETF（顛覆式創新）",
+    "ARKW": "ARK Next Generation Internet（下一代網路）",
+    "ARKG": "ARK Genomic Revolution（基因科技）",
+}
+
+def fetch_ark_holdings(symbol="ARKK", top_n=15):
+    """從 arkfunds.io 抓取 ARK 每日持股，回傳前 N 大。"""
+    try:
+        url = f"https://arkfunds.io/api/v2/etf/holdings?symbol={symbol}"
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        data = r.json()
+        holdings = data.get("holdings", [])[:top_n]
+        return {
+            "symbol":   symbol,
+            "name":     ARK_FUNDS.get(symbol, symbol),
+            "date":     data.get("date_from", ""),
+            "holdings": [
+                {
+                    "rank":        h["weight_rank"],
+                    "ticker":      h["ticker"],
+                    "company":     h["company"],
+                    "weight":      h["weight"],
+                    "share_price": h["share_price"],
+                    "market_value": h["market_value"],
+                }
+                for h in holdings
+            ],
+        }
+    except Exception as e:
+        print(f"[ARK] {symbol} 抓取失敗: {e}", flush=True)
+        return {"symbol": symbol, "name": ARK_FUNDS.get(symbol, symbol), "date": "", "holdings": []}
+
+def get_ark_data():
+    now = time.time()
+    with _cache_lock:
+        if _ark_cache["data"] and now - _ark_cache["ts"] < ARK_CACHE_SECONDS:
+            return _ark_cache["data"]
+        data = [fetch_ark_holdings(s) for s in ARK_FUNDS]
+        _ark_cache["data"] = data
+        _ark_cache["ts"]   = now
+    return data
 
 # ── 台南透天厝房價 ─────────────────────────────────────────────────────────────
 def roc_to_date(s):
@@ -1078,6 +1125,24 @@ tr:hover td { background: #1d2338; }
 .news-meta { font-size: .64rem; color: #374151; margin-top: 2px; }
 .loading { text-align: center; padding: 40px; color: #475569; font-size: .9rem; }
 
+/* ── ARK 持股 ── */
+.ark-wrap { margin-top: 28px; }
+.ark-title { font-size:.78rem; font-weight:700; color:#f8fafc; margin-bottom:14px; display:flex; align-items:center; gap:10px; }
+.ark-tabs { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.ark-tab { padding:5px 14px; border-radius:20px; font-size:.72rem; font-weight:600; cursor:pointer; border:1px solid #252d42; color:#64748b; background:#161b27; transition:.15s; }
+.ark-tab.active { background:#1d4ed8; border-color:#1d4ed8; color:#fff; }
+.ark-fund-name { font-size:.72rem; color:#475569; margin-bottom:10px; }
+.ark-table { width:100%; border-collapse:collapse; }
+.ark-table th { padding:7px 14px; font-size:.65rem; color:#475569; text-align:right; font-weight:500; border-bottom:1px solid #252d42; }
+.ark-table th:first-child,.ark-table th:nth-child(2) { text-align:left; }
+.ark-table td { padding:9px 14px; font-size:.82rem; text-align:right; border-top:1px solid #1a1f30; }
+.ark-table td:first-child { text-align:left; color:#64748b; font-size:.75rem; }
+.ark-table td:nth-child(2) { text-align:left; color:#cbd5e1; font-weight:500; }
+.ark-table tr:hover td { background:#1d2338; }
+.ark-weight { color:#fbbf24; font-weight:700; }
+.ark-card { background:#161b27; border:1px solid #252d42; border-radius:14px; overflow:hidden; }
+.ark-date { font-size:.65rem; color:#374151; }
+
 /* ── 未來主題投資 ── */
 .theme-wrap { margin-top: 28px; }
 .theme-title { font-size: .78rem; font-weight: 700; color: #f8fafc; margin-bottom: 6px; display:flex; align-items:center; gap:10px; }
@@ -1325,6 +1390,21 @@ tr:hover td { background: #1d2338; }
 <div class="grid" id="grid"><div class="loading">⏳ 正在抓取最新股價與新聞…</div></div>
 
 <!-- 行事曆區塊 -->
+<!-- ARK 持股 -->
+<div class="ark-wrap">
+  <div class="ark-title">🦅 木頭姐 ARK 每日持股
+    <span class="ark-date" id="ark-date"></span>
+  </div>
+  <div class="ark-tabs" id="ark-tabs"></div>
+  <div class="ark-card">
+    <div class="ark-fund-name" id="ark-fund-name"></div>
+    <table class="ark-table">
+      <thead><tr><th>#</th><th>股票</th><th>公司名稱</th><th>占比</th><th>股價</th></tr></thead>
+      <tbody id="ark-body"><tr><td colspan="5" style="text-align:center;padding:20px;color:#475569">⏳ 載入中…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- 未來主題投資 -->
 <div class="theme-wrap">
   <div class="theme-title">🔭 未來主題投資
@@ -1969,6 +2049,39 @@ async function loadChips(){
   } catch(e){ console.log("chips load failed:", e); }
 }
 
+// ── ARK 持股 ──────────────────────────────────────────────────────────────
+let _arkData = [], _arkIdx = 0;
+
+function renderArk(idx){
+  _arkIdx = idx;
+  const fund = _arkData[idx];
+  if(!fund) return;
+  // tabs
+  document.getElementById("ark-tabs").innerHTML = _arkData.map((f,i)=>
+    `<span class="ark-tab ${i===idx?"active":""}" onclick="renderArk(${i})">${f.symbol}</span>`
+  ).join("");
+  document.getElementById("ark-fund-name").textContent = fund.name;
+  document.getElementById("ark-date").textContent = fund.date ? `資料日期：${fund.date}` : "";
+  document.getElementById("ark-body").innerHTML = fund.holdings.length
+    ? fund.holdings.map(h=>`<tr>
+<td>${h.rank}</td>
+<td><strong>${h.ticker}</strong></td>
+<td style="color:#94a3b8;font-size:.75rem">${h.company}</td>
+<td class="ark-weight">${h.weight.toFixed(2)}%</td>
+<td style="color:#f1f5f9">$${h.share_price.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+</tr>`).join("")
+    : `<tr><td colspan="5" style="text-align:center;padding:20px;color:#475569">暫無資料</td></tr>`;
+}
+
+async function loadArk(){
+  try{
+    _arkData = await (await fetch("/ark")).json();
+    renderArk(0);
+  } catch{
+    document.getElementById("ark-body").innerHTML=`<tr><td colspan="5" style="text-align:center;padding:20px;color:#475569">⚠️ ARK 資料載入失敗</td></tr>`;
+  }
+}
+
 // ── 未來主題投資 ────────────────────────────────────────────────────────────
 function renderTheme(stocks){
   const grid = document.getElementById("theme-grid");
@@ -2052,7 +2165,7 @@ function slRender(){
 }
 function slUpdatePrices(quotes){_slQuotes=quotes;slRender();}
 
-load(); loadHouse(); loadCal(); loadTheme(); tick();
+load(); loadHouse(); loadCal(); loadTheme(); loadArk(); tick();
 slRender();
 // 延遲載入籌碼（不阻塞主要股價顯示）
 setTimeout(loadChips, 3000);
@@ -2085,6 +2198,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/calendar":
             payload = safe_json(get_calendar()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/ark":
+            payload = safe_json(get_ark_data()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
