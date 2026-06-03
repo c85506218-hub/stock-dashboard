@@ -2341,7 +2341,7 @@ function wbRender(){
     return `<div class="sl-card ${cardCls}">
   ${delBtn}
   <div class="sl-card-top"><div class="sl-name">${nameStr}${badge}</div><div class="sl-status ${statusCls}">${status}</div></div>
-  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>$${e.target.toLocaleString()}</span>${e.note?`　<span style="color:#475569">${e.note}</span>`:""}　<span>${e.addedAt}</span></div>
+  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>${e.target!=null?"$"+Number(e.target).toLocaleString():"計算中"}</span>${e.note?`　<span style="color:#475569">${e.note}</span>`:""}　<span>${e.addedAt||""}</span></div>
   <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
 </div>`;
   }).join("");
