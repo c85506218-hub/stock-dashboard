@@ -1415,6 +1415,18 @@ tr:hover td { background: #1d2338; }
 </div>
 
 <!-- 停損提示 -->
+<!-- 目標買進提示 -->
+<div class="sl-wrap" style="margin-bottom:20px">
+  <div class="sl-title">🎯 目標買進提示</div>
+  <div class="sl-form">
+    <div class="sl-field"><span class="sl-label">股票代號</span><input class="sl-input" id="wb-ticker" placeholder="例：MSFT" style="width:110px"></div>
+    <div class="sl-field"><span class="sl-label">目標買進價</span><input class="sl-input" id="wb-target" type="number" placeholder="例：400" style="width:110px"></div>
+    <div class="sl-field"><span class="sl-label">備註（選填）</span><input class="sl-input" id="wb-note" placeholder="例：等回調" style="width:130px"></div>
+    <button class="sl-btn" onclick="wbAdd()">➕ 新增</button>
+  </div>
+  <div class="sl-list" id="wb-list"></div>
+</div>
+
 <div class="sl-wrap">
   <div class="sl-title">🛡️ 停損提示</div>
   <div class="sl-form">
@@ -1505,6 +1517,7 @@ function timeAgo(iso){
 function render(data){
   try{
   slUpdatePrices(data.quotes||[]);
+  wbUpdatePrices(data.quotes||[]);
   document.getElementById("ai-text").textContent = (data.commentary||{}).market_summary||"";
   const ai      = (data.commentary||{}).stocks||{};
   const news    = data.news||{};
@@ -2116,6 +2129,79 @@ async function loadTheme(){
   catch{ document.getElementById("theme-grid").innerHTML=`<div class="loading">⚠️ 主題股載入失敗</div>`; }
 }
 
+// ── 目標買進提示 ──────────────────────────────────────────────────────────────
+let _wbQuotes=[], _wbEntries=JSON.parse(localStorage.getItem("wb_entries")||"[]");
+
+// 預設加入 MSFT 和 COST（若尚未存在）
+(function(){
+  const defaults=[
+    {ticker:"MSFT", target:400, note:"微軟：RSI健康，等回調進場"},
+    {ticker:"COST", target:880, note:"好市多：RSI偏弱，接近甜蜜點"},
+  ];
+  defaults.forEach(d=>{
+    if(!_wbEntries.find(e=>e.ticker===d.ticker)){
+      _wbEntries.push({...d, addedAt:new Date().toLocaleDateString("zh-TW")});
+    }
+  });
+  localStorage.setItem("wb_entries",JSON.stringify(_wbEntries));
+})();
+
+function wbSave(){localStorage.setItem("wb_entries",JSON.stringify(_wbEntries));}
+function wbAdd(){
+  const ticker=document.getElementById("wb-ticker").value.trim().toUpperCase();
+  const target=parseFloat(document.getElementById("wb-target").value);
+  const note=document.getElementById("wb-note").value.trim();
+  if(!ticker||isNaN(target)||target<=0){alert("請輸入股票代號與目標買進價");return;}
+  _wbEntries.push({ticker,target,note,addedAt:new Date().toLocaleDateString("zh-TW")});
+  wbSave();
+  document.getElementById("wb-ticker").value="";
+  document.getElementById("wb-target").value="";
+  document.getElementById("wb-note").value="";
+  wbRender();
+}
+function wbDel(i){_wbEntries.splice(i,1);wbSave();wbRender();}
+function wbRender(){
+  const list=document.getElementById("wb-list");
+  if(!_wbEntries.length){
+    list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未設定目標買進價。</div>`;return;
+  }
+  const priceMap={};
+  for(const q of _wbQuotes) priceMap[q.ticker]=q;
+  list.innerHTML=_wbEntries.map((e,i)=>{
+    const q=priceMap[e.ticker];
+    const cur=q&&!q.error?q.price:null;
+    const nameStr=q?q.name:e.ticker;
+    let cardCls="",status="",statusCls="",barW=50,barColor="#3b82f6";
+    if(cur===null){
+      status="⚪ 等待報價"; statusCls="";
+    } else {
+      const diff=((cur-e.target)/e.target*100);
+      const aboveTarget=cur>e.target;
+      if(!aboveTarget){
+        status=`🎯 已到達目標價！現價 $${cur}，可考慮進場`;
+        statusCls="profit"; cardCls="profit"; barColor="#22c55e"; barW=95;
+      } else if(diff<=5){
+        status=`🔔 快到了！距目標價還差 ${diff.toFixed(1)}%`;
+        statusCls="warning"; cardCls="warning"; barColor="#f59e0b"; barW=80;
+      } else if(diff<=15){
+        status=`⏳ 持續觀察，距目標 ${diff.toFixed(1)}%`;
+        statusCls=""; barColor="#3b82f6"; barW=55;
+      } else {
+        status=`📈 現價比目標高 ${diff.toFixed(1)}%，繼續等待`;
+        statusCls=""; barColor="#475569"; barW=30;
+      }
+    }
+    const curStr=cur!=null?`$${cur.toLocaleString()}`:"載入中";
+    return `<div class="sl-card ${cardCls}">
+  <button class="sl-del" onclick="wbDel(${i})">✕</button>
+  <div class="sl-card-top"><div class="sl-name">${nameStr}</div><div class="sl-status ${statusCls}">${status}</div></div>
+  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>$${e.target.toLocaleString()}</span>${e.note?`　備註 <span>${e.note}</span>`:""}　新增日期 <span>${e.addedAt}</span></div>
+  <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
+</div>`;
+  }).join("");
+}
+function wbUpdatePrices(quotes){_wbQuotes=quotes;wbRender();}
+
 // ── 停損提示 ────────────────────────────────────────────────────────────────
 let _slQuotes=[], _slEntries=JSON.parse(localStorage.getItem("sl_entries")||"[]");
 function slSave(){localStorage.setItem("sl_entries",JSON.stringify(_slEntries));}
@@ -2166,7 +2252,7 @@ function slRender(){
 function slUpdatePrices(quotes){_slQuotes=quotes;slRender();}
 
 load(); loadHouse(); loadCal(); loadTheme(); loadArk(); tick();
-slRender();
+wbRender(); slRender();
 // 延遲載入籌碼（不阻塞主要股價顯示）
 setTimeout(loadChips, 3000);
 </script>
