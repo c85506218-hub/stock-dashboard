@@ -998,10 +998,13 @@ def _refresh_theme():
 def calc_target_price(ticker, name):
     """根據技術面每日自動計算目標買進價與說明。"""
     try:
-        raw    = yf.Ticker(ticker).history(period="90d")
+        raw    = yf.Ticker(ticker).history(period="6mo")
         if len(raw) < 30:
             return None
-        closes  = [float(x) for x in raw["Close"]]
+        # 過濾 NaN（台股停盤/除息日會產生 NaN）
+        closes  = [float(x) for x in raw["Close"] if not math.isnan(float(x))]
+        if len(closes) < 30:
+            return None
         price   = closes[-1]
         ma20    = sum(closes[-20:]) / 20
         ma60    = sum(closes[-60:]) / 60 if len(closes) >= 60 else ma20
@@ -1014,21 +1017,35 @@ def calc_target_price(ticker, name):
             ag = (ag*13+gains[i])/14; al = (al*13+losses[i])/14
         rsi = round(100-(100/(1+ag/al)), 1) if al else 100.0
 
+        # 判斷現價相對 MA 位置
+        above_ma20 = price > ma20
+        above_ma60 = price > ma60
+        # 急漲判斷：現價比 MA60 高超過 40%
+        extreme_run = ma60 > 0 and (price / ma60 - 1) > 0.40
+
         if rsi > 75:
-            target = round(ma20 * 0.97, 1)
-            reason = f"RSI {rsi} 嚴重過熱，等回測 MA20 下方 3% 再進"
+            if extreme_run:
+                target = round(ma20 * 0.95, 1)
+                reason = f"最近漲太猛（RSI {rsi}），建議等大幅回調再進場"
+            else:
+                target = round(ma20 * 0.97, 1)
+                reason = f"漲太多了（RSI {rsi}），等它冷卻回來再買"
         elif rsi > 65:
             target = round(ma20 * 0.99, 1)
-            reason = f"RSI {rsi} 偏熱，等回測 MA20 附近再進"
+            reason = f"漲勢偏強（RSI {rsi}），等小回調到均線附近再買"
         elif rsi >= 50:
-            target = round(price * 0.96, 1)
-            reason = f"RSI {rsi} 健康，等小回調 4% 進場"
+            if not above_ma20:
+                target = round(ma60 * 1.00, 1)
+                reason = f"走勢尚可但近期偏弱，等它跌深一點再撿"
+            else:
+                target = round(price * 0.96, 1)
+                reason = f"走勢健康（RSI {rsi}），等小回調 4% 就是不錯買點"
         elif rsi >= 40:
             target = round(ma60 * 1.01, 1)
-            reason = f"RSI {rsi} 偏弱，等 MA60 反彈確認"
+            reason = f"走勢偏弱（RSI {rsi}），別急著買，等它回穩再說"
         else:
-            target = round(ma60 * 0.98, 1)
-            reason = f"RSI {rsi} 超賣，等止跌訊號再進"
+            target = round(ma20 * 0.98, 1)
+            reason = f"跌很深了（RSI {rsi}），等止跌訊號出現、站回均線再進"
 
         return {
             "ticker": ticker, "name": name,
@@ -1036,6 +1053,38 @@ def calc_target_price(ticker, name):
             "price": round(price, 1), "ma20": round(ma20, 1),
             "ma60": round(ma60, 1), "rsi": rsi,
         }
+    except Exception:
+        return None
+
+def calc_target_from_signal(ticker, name, sig):
+    """從已抓到的 signal 資料計算目標價（備援，避免重複抓 history）。"""
+    try:
+        price = sig.get("price") or sig.get("prev5")
+        ma20  = sig.get("ma20")
+        rsi   = sig.get("rsi")
+        if not price or not ma20 or rsi is None:
+            return None
+        # ma60 無法從 signal 取得，用 ma20 近似
+        ma60 = ma20
+        above_ma20 = price > ma20
+        extreme_run = False
+        if rsi > 75:
+            target = round(ma20 * 0.97, 1)
+            reason = f"漲太多了（RSI {rsi}），等它冷卻回來再買"
+        elif rsi > 65:
+            target = round(ma20 * 0.99, 1)
+            reason = f"漲勢偏強（RSI {rsi}），等小回調到均線附近再買"
+        elif rsi >= 50:
+            target = round(price * 0.96, 1) if above_ma20 else round(ma20 * 1.00, 1)
+            reason = f"走勢健康（RSI {rsi}），等小回調 4% 就是不錯買點" if above_ma20 else "走勢偏弱，等它跌深一點再撿"
+        elif rsi >= 40:
+            target = round(ma20 * 1.01, 1)
+            reason = f"走勢偏弱（RSI {rsi}），別急著買，等它回穩再說"
+        else:
+            target = round(ma20 * 0.98, 1)
+            reason = f"跌很深了（RSI {rsi}），等止跌訊號出現、站回均線再進"
+        return {"ticker": ticker, "name": name, "target": target, "note": reason,
+                "price": round(price, 1), "ma20": round(ma20, 1), "ma60": round(ma60, 1), "rsi": rsi}
     except Exception:
         return None
 
@@ -1054,6 +1103,19 @@ def _refresh_signals():
                 r = f.result()
                 if r:
                     targets[tgt_futs[f]] = r
+        # 備援：抓不到 history 的股票，用 signal 資料推算目標
+        for row in WATCHLIST:
+            t, n = row[0], row[1]
+            if t not in targets and t in signals and signals[t].get("signal") != "N/A":
+                sig = signals[t]
+                # fetch_signal 沒有 price，從 quotes 快取補
+                q_list = _bg_cache.get("quotes", [])
+                q = next((q for q in q_list if q["ticker"] == t), None)
+                if q and not q["error"]:
+                    sig = {**sig, "price": q["price"]}
+                r = calc_target_from_signal(t, n, sig)
+                if r:
+                    targets[t] = r
         with _bg_lock:
             _bg_cache["signals"] = signals
             _bg_cache["targets"] = targets
@@ -1469,17 +1531,6 @@ tr:hover td { background: #1d2338; }
 </div>
 
 <!-- 停損提示 -->
-<!-- 目標買進提示 -->
-<div class="sl-wrap" style="margin-bottom:20px">
-  <div class="sl-title">🎯 目標買進提示</div>
-  <div class="sl-form">
-    <div class="sl-field"><span class="sl-label">股票代號</span><input class="sl-input" id="wb-ticker" placeholder="例：MSFT" style="width:110px"></div>
-    <div class="sl-field"><span class="sl-label">目標買進價</span><input class="sl-input" id="wb-target" type="number" placeholder="例：400" style="width:110px"></div>
-    <div class="sl-field"><span class="sl-label">備註（選填）</span><input class="sl-input" id="wb-note" placeholder="例：等回調" style="width:130px"></div>
-    <button class="sl-btn" onclick="wbAdd()">➕ 新增</button>
-  </div>
-  <div class="sl-list" id="wb-list"></div>
-</div>
 
 <div class="sl-wrap">
   <div class="sl-title">🛡️ 停損提示</div>
@@ -1979,7 +2030,66 @@ function renderAnalysis(d, ticker){
     newsHtml = `<div class="ap-news-loading" id="ap-news-spinner">⏳ 新聞載入中…</div>`;
   }
 
-  document.getElementById("chart-analysis").innerHTML = `
+  // ── 甜蜜點卡片 ───────────────────────────────────────────────
+  const tgt = getTargetForTicker(ticker);
+  const srvTgt = _serverTargets[ticker];
+
+  function sweetStatus(srv, tgtPrice){
+    if(!srv || srv.price==null) return {text:"等待資料更新", cls:"ap-flat", emoji:"⏳"};
+    const cur = srv.price;
+    const rsi = srv.rsi;
+    const ma20 = srv.ma20;
+    const isRecovery = rsi != null && rsi < 50;
+    if(isRecovery){
+      const aboveMA20 = ma20 ? cur >= ma20 : true;
+      if(cur >= tgtPrice && aboveMA20) return {text:"✅ 已到甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
+      if(cur >= tgtPrice) return {text:"價格到了但還不穩，再觀察", cls:"ap-warn", emoji:"⚠️"};
+      const gap = ((tgtPrice - cur)/cur*100).toFixed(1);
+      return {text:`還沒到，距甜蜜點還差 ${gap}%`, cls:"ap-flat", emoji:"⏳"};
+    } else {
+      if(cur <= tgtPrice) return {text:"✅ 已回調到甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
+      const gap = ((cur - tgtPrice)/tgtPrice*100).toFixed(1);
+      if(+gap <= 5) return {text:`快到了！再跌 ${gap}% 就到甜蜜點`, cls:"ap-warn", emoji:"🔔"};
+      return {text:`現在太貴，等跌 ${gap}% 再看`, cls:"ap-flat", emoji:"📈"};
+    }
+  }
+
+  function sweetAdvice(srv){
+    if(!srv || srv.rsi==null) return "";
+    const r = srv.rsi;
+    const cur = srv.price;
+    const ma20 = srv.ma20;
+    const ma60 = srv.ma60;
+    if(r > 75) return "📌 最近漲太快，先等它冷卻一下再進場";
+    if(r > 65) return "📌 漲勢偏強，等小回調再買比較安心";
+    if(r >= 50){
+      if(cur && ma20 && cur < ma20) return "📌 已跌破短期均線，等它站穩再進";
+      return "📌 走勢健康，等小跌就是不錯的買點";
+    }
+    if(r >= 40) return "📌 走勢偏弱，等止跌回穩的訊號再進";
+    return "📌 跌很深了，別急著接，等它先止跌再說";
+  }
+
+  const st = srvTgt ? sweetStatus(srvTgt, +tgt) : null;
+  const sweetHtml = tgt ? `
+  <div class="ap-card" style="border-color:#1d4ed8;background:#0d1829">
+    <div class="ap-card-title">🎯 甜蜜點建議</div>
+    ${st ? `<div style="font-size:.88rem;font-weight:600;color:${st.cls==='ap-bull'?'#3fb950':st.cls==='ap-warn'?'#d29922':'#8b949e'};padding:4px 0 8px;line-height:1.4">${st.emoji} ${st.text}</div>` : ""}
+    <div class="ap-row">
+      <span class="ap-label">建議買進價</span>
+      <span class="ap-val" style="color:#fbbf24;font-size:.92rem;font-weight:700">$${(+tgt).toLocaleString()}</span>
+    </div>
+    ${srvTgt && srvTgt.price!=null ? `
+    <div class="ap-row">
+      <span class="ap-label">目前價格</span>
+      <span class="ap-val ap-flat">$${(+srvTgt.price).toLocaleString()}</span>
+    </div>` : ""}
+    <div style="font-size:.72rem;color:#475569;padding:7px 0 2px;line-height:1.6;border-top:1px solid #21262d;margin-top:4px">
+      ${srvTgt ? sweetAdvice(srvTgt) : ""}
+    </div>
+  </div>` : "";
+
+  document.getElementById("chart-analysis").innerHTML = sweetHtml + `
   <div class="ap-card">
     <div class="ap-card-title">趨勢分析</div>
     <div class="ap-row">
@@ -2216,7 +2326,7 @@ async function loadTheme(){
 }
 
 // ── 目標買進提示 ──────────────────────────────────────────────────────────────
-let _wbQuotes=[], _wbEntries=JSON.parse(localStorage.getItem("wb_entries")||"[]");
+let _wbQuotes=[], _wbEntries=(JSON.parse(localStorage.getItem("wb_entries")||"[]")).filter(e=>e&&e.ticker);
 
 // ── 每日目標買進價（從後端動態載入）──────────────────────────────────────────
 let _serverTargets = {};  // ticker → {target, note, rsi, ma20, ma60}
@@ -2225,7 +2335,6 @@ async function loadTargets(){
   try{
     const data = await (await fetch("/targets")).json();
     _serverTargets = data;
-    wbRender();  // 更新面板
   } catch(e){ console.warn("targets載入失敗", e); }
 }
 
@@ -2301,47 +2410,74 @@ function wbAdd(){
 function wbDel(i){_wbEntries.splice(i,1);wbSave();wbRender();}
 function wbRender(){
   const list=document.getElementById("wb-list");
-  // 合併：手動設定 + 伺服器目標（伺服器有但手動沒設的也顯示）
-  const srvList = Object.values(_serverTargets).filter(s=>
-    !_wbEntries.find(e=>e.ticker===s.ticker)
-  ).map(s=>({ticker:s.ticker, target:s.target, note:s.note, addedAt:"每日更新", _srv:true}));
-  const allEntries = [..._wbEntries, ...srvList];
+  const allEntries = _wbEntries;
   if(!allEntries.length){
-    list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">載入中…</div>`;return;
+    list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未設定目標買進價。輸入股票代號與目標價後點「新增」即可追蹤。</div>`;return;
   }
   const priceMap={};
   for(const q of _wbQuotes) priceMap[q.ticker]=q;
   list.innerHTML=allEntries.map((e,i)=>{
     const q=priceMap[e.ticker];
-    const cur=q&&!q.error?q.price:null;
+    const cur=(q&&!q.error&&q.price!=null)?q.price:null;
     const nameStr=q?q.name:e.ticker;
     let cardCls="",status="",statusCls="",barW=50,barColor="#3b82f6";
     if(cur===null){
       status="⚪ 等待報價"; statusCls="";
     } else {
-      const diff=((cur-e.target)/e.target*100);
-      const aboveTarget=cur>e.target;
-      if(!aboveTarget){
-        status=`🎯 已到達目標價！現價 $${cur}，可考慮進場`;
-        statusCls="profit"; cardCls="profit"; barColor="#22c55e"; barW=95;
-      } else if(diff<=5){
-        status=`🔔 快到了！距目標價還差 ${diff.toFixed(1)}%`;
-        statusCls="warning"; cardCls="warning"; barColor="#f59e0b"; barW=80;
-      } else if(diff<=15){
-        status=`⏳ 持續觀察，距目標 ${diff.toFixed(1)}%`;
-        statusCls=""; barColor="#3b82f6"; barW=55;
+      // 判斷方向：伺服器目標有 RSI 資訊
+      // RSI < 50 → 超賣反彈型，目標在現價上方，等漲到目標才買
+      // RSI >= 50 或手動設定 → 過熱回調型，目標在現價下方，等跌到目標才買
+      const srvInfo = _serverTargets[e.ticker];
+      const srvRsi  = srvInfo ? srvInfo.rsi : null;
+      const isRecovery = srvRsi != null && srvRsi < 50;  // 超賣，等反彈
+
+      const diff = ((cur - e.target) / e.target * 100);  // >0 現價高於目標，<0 現價低於目標
+
+      if(isRecovery){
+        // 等反彈確認：需要現價 >= target 且 現價 >= MA20（站回均線才算真正反彈）
+        const ma20 = srvInfo ? srvInfo.ma20 : null;
+        const aboveMA20 = ma20 ? cur >= ma20 : true;  // 無MA20資料就不要求
+        if(cur >= e.target && aboveMA20){
+          status=`🎯 反彈確認甜蜜點！現價 $${cur}，可考慮進場`;
+          statusCls="profit"; cardCls="profit"; barColor="#22c55e"; barW=95;
+        } else if(cur >= e.target && !aboveMA20){
+          status=`⚠️ 已超目標價但未站回MA20，觀察中`;
+          statusCls="warning"; cardCls="warning"; barColor="#f59e0b"; barW=65;
+        } else if(diff >= -5){
+          status=`🔔 接近了！距甜蜜點還差 ${Math.abs(diff).toFixed(1)}%`;
+          statusCls="warning"; cardCls="warning"; barColor="#f59e0b"; barW=80;
+        } else if(diff >= -15){
+          status=`⏳ 等待反彈確認，距目標 ${Math.abs(diff).toFixed(1)}%`;
+          statusCls=""; barColor="#3b82f6"; barW=45;
+        } else {
+          status=`📉 超賣整理中，距甜蜜點 ${Math.abs(diff).toFixed(1)}%`;
+          statusCls=""; barColor="#475569"; barW=20;
+        }
       } else {
-        status=`📈 現價比目標高 ${diff.toFixed(1)}%，繼續等待`;
-        statusCls=""; barColor="#475569"; barW=30;
+        // 等回調：cur 要 <= target 才是甜蜜點
+        if(cur <= e.target){
+          status=`🎯 已回調到甜蜜點！現價 $${cur}，可考慮進場`;
+          statusCls="profit"; cardCls="profit"; barColor="#22c55e"; barW=95;
+        } else if(diff<=5){
+          status=`🔔 快到了！距甜蜜點還差 ${diff.toFixed(1)}%`;
+          statusCls="warning"; cardCls="warning"; barColor="#f59e0b"; barW=80;
+        } else if(diff<=15){
+          status=`⏳ 持續觀察，距目標 ${diff.toFixed(1)}%`;
+          statusCls=""; barColor="#3b82f6"; barW=55;
+        } else {
+          status=`📈 現價比目標高 ${diff.toFixed(1)}%，繼續等待`;
+          statusCls=""; barColor="#475569"; barW=30;
+        }
       }
     }
-    const curStr=cur!=null?`$${cur.toLocaleString()}`:"載入中";
+    const curStr=cur!=null?`$${(+cur).toLocaleString()}`:"載入中";
+    const tgtStr=e.target!=null&&!isNaN(+e.target)?"$"+(+e.target).toLocaleString():"計算中";
     const delBtn = e._srv ? `` : `<button class="sl-del" onclick="wbDel(${i})">✕</button>`;
     const badge = e._srv ? `<span style="font-size:.6rem;color:#475569;margin-left:6px">每日自動更新</span>` : "";
     return `<div class="sl-card ${cardCls}">
   ${delBtn}
   <div class="sl-card-top"><div class="sl-name">${nameStr}${badge}</div><div class="sl-status ${statusCls}">${status}</div></div>
-  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>${e.target!=null?"$"+Number(e.target).toLocaleString():"計算中"}</span>${e.note?`　<span style="color:#475569">${e.note}</span>`:""}　<span>${e.addedAt||""}</span></div>
+  <div class="sl-details">現價 <span>${curStr}</span>　目標買進價 <span>${tgtStr}</span>${e.note?`　<span style="color:#475569">${e.note}</span>`:""}　<span>${e.addedAt||""}</span></div>
   <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
 </div>`;
   }).join("");
@@ -2372,7 +2508,7 @@ function slRender(){
   for(const q of _slQuotes) priceMap[q.ticker]=q;
   list.innerHTML=_slEntries.map((e,i)=>{
     const q=priceMap[e.ticker];
-    const cur=q&&!q.error?q.price:null;
+    const cur=(q&&!q.error&&q.price!=null)?q.price:null;
     const slPrice=e.buy*(1-e.pct/100);
     const tpPrice=e.buy*1.15;
     let cardCls="",status="",statusCls="",barColor="",barW=50;
@@ -2390,7 +2526,7 @@ function slRender(){
     return `<div class="sl-card ${cardCls}">
   <button class="sl-del" onclick="slDel(${i})">✕</button>
   <div class="sl-card-top"><div class="sl-name">${nameStr}</div><div class="sl-status ${statusCls}">${status}</div></div>
-  <div class="sl-details">現價 <span>${cur!=null?"NT$ "+cur.toLocaleString():"載入中"}</span>　買進 <span>NT$ ${e.buy.toLocaleString()}</span>　停損價 <span>NT$ ${slPrice.toFixed(0)}（-${e.pct}%）</span>${e.note?`　備註 <span>${e.note}</span>`:""}　新增日期 <span>${e.addedAt}</span></div>
+  <div class="sl-details">現價 <span>${cur!=null?"NT$ "+(+cur).toLocaleString():"載入中"}</span>　買進 <span>NT$ ${(+e.buy).toLocaleString()}</span>　停損價 <span>NT$ ${slPrice.toFixed(0)}（-${e.pct}%）</span>${e.note?`　備註 <span>${e.note}</span>`:""}　新增日期 <span>${e.addedAt}</span></div>
   <div class="sl-bar-wrap"><div class="sl-bar" style="width:${barW}%;background:${barColor}"></div></div>
 </div>`;
   }).join("");
