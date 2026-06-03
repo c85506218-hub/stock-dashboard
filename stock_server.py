@@ -1809,6 +1809,36 @@ async function _loadChart(ticker, displayName, period){
   if(d.ma5&&d.ma5.length)  { const s=_chartMain.addLineSeries({color:"#26a69a",lineWidth:1,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma5); }
   if(d.ma20&&d.ma20.length) { const s=_chartMain.addLineSeries({color:"#f59e0b",lineWidth:1,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma20); }
   if(d.ma60&&d.ma60.length) { const s=_chartMain.addLineSeries({color:"#a78bfa",lineWidth:1.5,priceLineVisible:false,lastValueVisible:false}); s.setData(d.ma60); }
+
+  // ── 目標買進價線 ──────────────────────────────────────────────
+  const wbEntry = (_wbEntries||[]).find(e=>e.ticker===ticker);
+  const slEntry = (_slEntries||[]).find(e=>e.ticker===ticker);
+  if(wbEntry && d.candles && d.candles.length){
+    const times = d.candles.map(c=>c.time);
+    const targetLine = _chartMain.addLineSeries({
+      color:"#22c55e", lineWidth:1.5, lineStyle:1,
+      priceLineVisible:false, lastValueVisible:true,
+      title:`🎯 目標買進 $${wbEntry.target}`,
+    });
+    targetLine.setData(times.map(t=>({time:t, value:wbEntry.target})));
+  }
+  if(slEntry && d.candles && d.candles.length){
+    const times = d.candles.map(c=>c.time);
+    const slPrice = slEntry.buy * (1 - slEntry.pct/100);
+    const slLine = _chartMain.addLineSeries({
+      color:"#ef4444", lineWidth:1.5, lineStyle:1,
+      priceLineVisible:false, lastValueVisible:true,
+      title:`🛡️ 停損 $${slPrice.toFixed(0)}`,
+    });
+    slLine.setData(times.map(t=>({time:t, value:slPrice})));
+    const buyLine = _chartMain.addLineSeries({
+      color:"#f59e0b", lineWidth:1, lineStyle:2,
+      priceLineVisible:false, lastValueVisible:true,
+      title:`💰 買進 $${slEntry.buy}`,
+    });
+    buyLine.setData(times.map(t=>({time:t, value:slEntry.buy})));
+  }
+
   _chartMain.timeScale().fitContent();
 
   // ── 成交量圖 ──────────────────────────────────────────────────
