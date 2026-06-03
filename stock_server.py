@@ -125,6 +125,14 @@ WATCHLIST = [
     ("UMAC",    "UMAC (Unusual Machines)",  "美股－多元",    "USD"),
 ]
 
+# ── 未來主題投資（玻璃基板 AI 封裝供應鏈）────────────────────────────────────
+THEME_WATCHLIST = [
+    ("3149.TW", "正達 3149",   "NTD", "最上游原材料，具切割拋光能力，與康寧合作"),
+    ("3583.TW", "辛耘 3583",   "NTD", "修孔／蝕刻設備，設備股較穩健"),
+    ("3030.TW", "德律 3030",   "NTD", "AOI 自動光學檢測龍頭"),
+    ("3673.TW", "TPK-KY 3673","NTD", "鑽孔／TGV 技術，留意轉型進度"),
+]
+
 SECTIONS_ORDER = [
     "台股大盤", "台灣ETF－高息", "台灣ETF－主題",
     "台股－半導體", "台股－電子製造", "台股－金融", "台股－傳產其他",
@@ -888,6 +896,7 @@ _bg_cache = {
     "quotes":    [],
     "news":      {},
     "signals":   {},
+    "theme":     [],
     "updated":   "",
     "ready":     False,
 }
@@ -923,6 +932,21 @@ def _refresh_news():
     except Exception as e:
         print(f"[BG] news 更新失敗: {e}", flush=True)
 
+def _refresh_theme():
+    """抓未來主題投資股價+訊號。"""
+    results = []
+    try:
+        for ticker, name, currency, desc in THEME_WATCHLIST:
+            q = fetch_quote(ticker, name, "未來主題", currency)
+            s = fetch_signal(ticker)
+            q["desc"] = desc
+            q["signal_data"] = s
+            results.append(q)
+        with _bg_lock:
+            _bg_cache["theme"] = results
+    except Exception as e:
+        print(f"[BG] theme 更新失敗: {e}", flush=True)
+
 def _refresh_signals():
     signals = {}
     try:
@@ -954,7 +978,8 @@ def _background_loop():
         if now - last_signal_refresh > SIGNAL_CACHE_SECONDS:
             print("[BG] 更新訊號...", flush=True)
             _refresh_signals()
-            print("[BG] 訊號更新完成", flush=True)
+            _refresh_theme()
+            print("[BG] 訊號+主題更新完成", flush=True)
             last_signal_refresh = time.time()
         time.sleep(DATA_CACHE_SECONDS)
 
@@ -1052,6 +1077,24 @@ tr:hover td { background: #1d2338; }
 .news-item a:hover { color: #60a5fa; }
 .news-meta { font-size: .64rem; color: #374151; margin-top: 2px; }
 .loading { text-align: center; padding: 40px; color: #475569; font-size: .9rem; }
+
+/* ── 未來主題投資 ── */
+.theme-wrap { margin-top: 28px; }
+.theme-title { font-size: .78rem; font-weight: 700; color: #f8fafc; margin-bottom: 6px; display:flex; align-items:center; gap:10px; }
+.theme-subtitle { font-size: .7rem; color: #475569; margin-bottom: 14px; }
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 14px; }
+.theme-card {
+  background: #161b27; border: 1px solid #252d42; border-radius: 14px;
+  padding: 14px 18px; cursor: pointer; transition: border-color .2s;
+}
+.theme-card:hover { border-color: #3b82f6; }
+.theme-card-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; }
+.theme-name { font-size:.88rem; font-weight:600; color:#f1f5f9; }
+.theme-price { font-size:.88rem; font-weight:700; color:#f1f5f9; font-variant-numeric:tabular-nums; }
+.theme-change { font-size:.78rem; margin-top:2px; }
+.theme-signal { font-size:.75rem; margin-top:4px; }
+.theme-desc { font-size:.7rem; color:#475569; margin-top:8px; border-top:1px solid #1a1f30; padding-top:8px; line-height:1.5; }
+.theme-tag { display:inline-block; font-size:.6rem; padding:2px 7px; border-radius:4px; background:#1e3a5f; color:#60a5fa; font-weight:700; margin-bottom:6px; }
 
 /* ── 停損提示 ── */
 .sl-wrap{margin-top:28px}.sl-title{font-size:.78rem;font-weight:700;color:#f8fafc;margin-bottom:14px}
@@ -1282,6 +1325,15 @@ tr:hover td { background: #1d2338; }
 <div class="grid" id="grid"><div class="loading">⏳ 正在抓取最新股價與新聞…</div></div>
 
 <!-- 行事曆區塊 -->
+<!-- 未來主題投資 -->
+<div class="theme-wrap">
+  <div class="theme-title">🔭 未來主題投資
+    <span style="font-size:.65rem;color:#475569;font-weight:400">玻璃基板 AI 封裝供應鏈</span>
+  </div>
+  <div class="theme-subtitle">⚠️ 主題股波動較大，適合長期持有、分批佈局，請自行評估風險</div>
+  <div class="theme-grid" id="theme-grid"><div class="loading">⏳ 載入主題股資料…</div></div>
+</div>
+
 <!-- 停損提示 -->
 <div class="sl-wrap">
   <div class="sl-title">🛡️ 停損提示</div>
@@ -1917,6 +1969,40 @@ async function loadChips(){
   } catch(e){ console.log("chips load failed:", e); }
 }
 
+// ── 未來主題投資 ────────────────────────────────────────────────────────────
+function renderTheme(stocks){
+  const grid = document.getElementById("theme-grid");
+  if(!stocks||!stocks.length){
+    grid.innerHTML=`<div class="loading">⚠️ 暫無資料</div>`; return;
+  }
+  const sigMap = {"BUY":"🟢 買進","HOLD":"🟡 觀望","SELL":"🔴 賣出","HOT":"🔥 過熱","N/A":"⚪"};
+  grid.innerHTML = stocks.map(q => {
+    const c   = q.change_pct > 0 ? "up" : q.change_pct < 0 ? "down" : "flat";
+    const arr = q.change_pct > 0 ? "▲" : q.change_pct < 0 ? "▼" : "–";
+    const sig = q.signal_data || {};
+    const sigLabel = sigMap[sig.signal||"N/A"]||"⚪";
+    const rsiStr = sig.rsi!=null ? `　RSI:${sig.rsi}` : "";
+    const volStr = sig.vol_ratio!=null ? `　量比:${sig.vol_ratio}x` : "";
+    const safeTicker = q.ticker.replace(/'/g,"\\'");
+    const safeName   = q.name.replace(/&/g,"&amp;").replace(/'/g,"\\'");
+    return `<div class="theme-card" onclick="openChart('${safeTicker}','${safeName}')">
+  <span class="theme-tag">玻璃基板供應鏈</span>
+  <div class="theme-card-top">
+    <div class="theme-name">${q.name}</div>
+    <div class="theme-price">${q.error?"--":"NT$"+fmt(q.price)}</div>
+  </div>
+  <div class="theme-change ${c}">${q.error?"--":arr+" "+( q.change_pct>=0?"+":"")+fmt(q.change_pct)+"%"}</div>
+  <div class="theme-signal">${sigLabel}${rsiStr}${volStr}</div>
+  <div class="theme-desc">📌 ${q.desc||""}</div>
+</div>`;
+  }).join("");
+}
+
+async function loadTheme(){
+  try{ renderTheme(await (await fetch("/theme")).json()); }
+  catch{ document.getElementById("theme-grid").innerHTML=`<div class="loading">⚠️ 主題股載入失敗</div>`; }
+}
+
 // ── 停損提示 ────────────────────────────────────────────────────────────────
 let _slQuotes=[], _slEntries=JSON.parse(localStorage.getItem("sl_entries")||"[]");
 function slSave(){localStorage.setItem("sl_entries",JSON.stringify(_slEntries));}
@@ -1966,7 +2052,7 @@ function slRender(){
 }
 function slUpdatePrices(quotes){_slQuotes=quotes;slRender();}
 
-load(); loadHouse(); loadCal(); tick();
+load(); loadHouse(); loadCal(); loadTheme(); tick();
 slRender();
 // 延遲載入籌碼（不阻塞主要股價顯示）
 setTimeout(loadChips, 3000);
@@ -1999,6 +2085,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/calendar":
             payload = safe_json(get_calendar()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/theme":
+            with _bg_lock:
+                data = _bg_cache["theme"]
+            payload = safe_json(data).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
@@ -2083,6 +2177,7 @@ def main():
     print(f"✅  Server started on 0.0.0.0:{PORT}", flush=True)
     # 啟動背景更新執行緒（永久執行）
     threading.Thread(target=_background_loop, daemon=True).start()
+    threading.Thread(target=_refresh_theme, daemon=True).start()
     print("🔄  背景更新執行緒已啟動", flush=True)
     try:
         server.serve_forever()
