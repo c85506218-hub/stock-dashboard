@@ -1697,8 +1697,7 @@ function render(data){
   document.getElementById("updated").textContent =
     "更新："+new Date().toLocaleString("zh-TW",{hour12:false});
   }catch(e){
-    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ render錯誤: ${e.message}<br><small>${(e.stack||'').split('\\n').slice(0,3).join(' | ')}</small></div>`;
-    throw e;
+    document.getElementById("grid").innerHTML=`<div class="loading">⚠️ 顯示錯誤: ${e.message}<br><small style="color:#475569">${(e.stack||'').split('\\n').slice(0,3).join(' | ')}</small></div>`;
   }
 }
 
@@ -2504,6 +2503,7 @@ function slAdd(){
 function slDel(i){_slEntries.splice(i,1);slSave();slRender();}
 function slRender(){
   const list=document.getElementById("sl-list");
+  if(!list) return;
   if(!_slEntries.length){list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未新增任何持股。輸入買進價格後點「新增」即可追蹤停損。</div>`;return;}
   const priceMap={};
   for(const q of _slQuotes) priceMap[q.ticker]=q;
