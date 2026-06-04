@@ -1210,6 +1210,8 @@ h1 { font-size: 1.45rem; font-weight: 700; color: #f8fafc; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
 .section { background: #161b27; border: 1px solid #252d42; border-radius: 14px; overflow: hidden; }
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap table { min-width: 360px; }
 .section-title {
   padding: 11px 18px; font-size: .7rem; font-weight: 600;
   letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;
@@ -1644,7 +1646,7 @@ function render(data){
 
     html += `<div class="section">
 <div class="section-title">${sec}<span class="badge ${bc}">${bl}</span></div>
-<table><thead><tr><th>名稱</th><th>最新價</th><th>漲跌</th><th>漲跌幅</th><th>訊號</th></tr></thead><tbody>`;
+<div class="table-wrap"><table><thead><tr><th>名稱</th><th>最新價</th><th>漲跌</th><th>漲跌幅</th><th>訊號</th></tr></thead><tbody>`;
 
     for(const q of items){
       const c = cls(q.change), cu = CUR[q.currency]||"";
@@ -1679,7 +1681,7 @@ function render(data){
 <td title="${sigTip}" style="font-size:.82rem;text-align:center">${q.error?"--":sigLabel}</td>
 </tr>`;
     }
-    html += `</tbody></table>`;
+    html += `</tbody></table></div>`;
 
     if(sNews.length){
       html += `<div class="news-wrap"><div class="news-hd">📰 最新消息</div>`;
