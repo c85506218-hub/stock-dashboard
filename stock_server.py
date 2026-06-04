@@ -2339,60 +2339,23 @@ async function loadTargets(){
   } catch(e){ console.warn("targets載入失敗", e); }
 }
 
-// 相容舊版手動設定（若使用者有自訂則優先用自訂）
+// 動態目標價優先；使用者手動設定僅作備援
 function getTargetForTicker(ticker){
-  const manual = (_wbEntries||[]).find(e=>e.ticker===ticker);
-  if(manual) return manual.target;
   const srv = _serverTargets[ticker];
-  return srv ? srv.target : null;
+  if(srv && srv.target) return srv.target;
+  const manual = (_wbEntries||[]).find(e=>e.ticker===ticker);
+  return manual ? manual.target : null;
 }
 
-// 預設目標買進價（分析師建議，若尚未存在則自動加入）
+// 移除硬編碼預設目標價，全部改用後端動態計算（/targets endpoint）
+// 同時清除舊版 localStorage 中殘留的硬編碼值
 (function(){
-  const defaults=[
-    // ── 台股大盤 ETF ──
-    {ticker:"0050.TW",  target:95,   note:"台灣50：等MA20支撐，RSI超買後回調甜蜜點"},
-    {ticker:"0056.TW",  target:47,   note:"高股息：RSI 85過熱，回到MA20附近再買"},
-    {ticker:"00878.TW", target:21,   note:"永續高股息：每季配息，等小回調"},
-    {ticker:"00919.TW", target:19,   note:"精選高息：高配息ETF，等RSI回60以下"},
-    {ticker:"00713.TW", target:52,   note:"高息低波：穩定型，回測MA20再進"},
-    {ticker:"00631L.TW",target:22,   note:"正2槓桿：大盤回調10%再考慮，高風險"},
-    // ── 台股個股 ──
-    {ticker:"2330.TW",  target:850,  note:"台積電：AI需求強勁，等RSI回60進場"},
-    {ticker:"2454.TW",  target:3800, note:"聯發科：3個月漲157%過熱，等MA20回測"},
-    {ticker:"2317.TW",  target:165,  note:"鴻海：AI伺服器受惠，等回調再買"},
-    {ticker:"2303.TW",  target:55,   note:"聯電：成熟製程穩定，低本益比"},
-    {ticker:"1519.TW",  target:450,  note:"華城：電力基建受惠股，波動大"},
-    {ticker:"2886.TW",  target:28,   note:"兆豐金：官股穩定配息約5%，長期存股"},
-    {ticker:"2891.TW",  target:32,   note:"中信金：獲利成長+配息，等小拉回"},
-    {ticker:"2884.TW",  target:38,   note:"玉山金：數位金融轉型，穩健成長"},
-    {ticker:"2883.TW",  target:22,   note:"開發金：今日RSI 79過熱，勿追高"},
-    {ticker:"2610.TW",  target:28,   note:"華航：景氣循環股，低點佈局"},
-    {ticker:"2618.TW",  target:38,   note:"長榮航：航空復甦，等回調"},
-    // ── 美股 ──
-    {ticker:"VOO",      target:650,  note:"S&P500 ETF：RSI 69健康邊緣，可分批買"},
-    {ticker:"TSM",      target:170,  note:"台積電ADR：與台積電連動，等RSI回65"},
-    {ticker:"NVDA",     target:195,  note:"輝達：MA60支撐區，等MACD翻多再進"},
-    {ticker:"AMD",      target:470,  note:"超微：AI晶片受惠，比輝達便宜"},
-    {ticker:"MSFT",     target:400,  note:"微軟：RSI 52健康，落後補漲機會"},
-    {ticker:"AAPL",     target:195,  note:"蘋果：AI iPhone超級換機週期"},
-    {ticker:"GOOG",     target:155,  note:"Alphabet：AI搜尋+雲端，本益比合理"},
-    {ticker:"AMZN",     target:195,  note:"Amazon：RSI 39偏弱，AWS雲端成長"},
-    {ticker:"TSLA",     target:350,  note:"特斯拉：Robotaxi長期賭注，高波動"},
-    {ticker:"COST",     target:880,  note:"好市多：RSI 37接近超賣，防禦型"},
-    {ticker:"GEV",      target:280,  note:"GE Vernova：電力基建AI資料中心受惠"},
-    // ── 未來主題 ──
-    {ticker:"3149.TW",  target:75,   note:"正達：玻璃基板上游，等技術確認"},
-    {ticker:"3583.TW",  target:720,  note:"辛耘：設備股較穩，等回測MA60"},
-    {ticker:"3030.TW",  target:320,  note:"德律：AOI龍頭，等RSI回健康區"},
-    {ticker:"3673.TW",  target:80,   note:"TPK-KY：觀察轉型進度，保守進場"},
-  ];
-  defaults.forEach(d=>{
-    if(!_wbEntries.find(e=>e.ticker===d.ticker)){
-      _wbEntries.push({...d, addedAt:new Date().toLocaleDateString("zh-TW")});
-    }
-  });
-  localStorage.setItem("wb_entries",JSON.stringify(_wbEntries));
+  const hardcoded = ["0050.TW","0056.TW","00878.TW","00919.TW","00713.TW","00631L.TW",
+    "2330.TW","2454.TW","2317.TW","2303.TW","1519.TW","2886.TW","2891.TW","2884.TW",
+    "2883.TW","2610.TW","2618.TW","VOO","TSM","NVDA","AMD","MSFT","AAPL","GOOG",
+    "AMZN","TSLA","COST","GEV","3149.TW","3583.TW","3030.TW","3673.TW"];
+  _wbEntries = _wbEntries.filter(e => !hardcoded.includes(e.ticker));
+  localStorage.setItem("wb_entries", JSON.stringify(_wbEntries));
 })();
 
 function wbSave(){localStorage.setItem("wb_entries",JSON.stringify(_wbEntries));}
