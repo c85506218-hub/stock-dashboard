@@ -2410,6 +2410,7 @@ function wbAdd(){
 function wbDel(i){_wbEntries.splice(i,1);wbSave();wbRender();}
 function wbRender(){
   const list=document.getElementById("wb-list");
+  if(!list) return;
   const allEntries = _wbEntries;
   if(!allEntries.length){
     list.innerHTML=`<div style="color:#475569;font-size:.8rem;padding:8px 0">尚未設定目標買進價。輸入股票代號與目標價後點「新增」即可追蹤。</div>`;return;
