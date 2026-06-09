@@ -2185,21 +2185,21 @@ function renderAnalysis(d, ticker){
     const ma20 = srv.ma20;
     const ma60 = srv.ma60;
 
-    // RSI < 50：走弱，target = MA60*1.01（通常高於現價），等價格「站回均線」確認
-    // RSI >= 50：走強，target = 現價*0.96（低於現價），等回調再買
-    const waitForRecovery = rsi != null && rsi < 50;
+    // 用 target vs current 決定方向，不用 RSI（RSI 只影響 target 的計算，不影響顯示邏輯）
+    // target > cur：等漲上去（站回均線確認）
+    // target < cur：等跌下來（回調買點）
+    const waitUp = tgtPrice > cur;   // 等漲
+    const waitDown = tgtPrice < cur; // 等跌
 
-    if(waitForRecovery){
-      // target 在現價之上，等漲回去
+    if(waitUp){
       const gap = +((tgtPrice - cur)/cur*100).toFixed(1);
       const aboveMa20 = ma20 ? cur >= ma20 : true;
       if(gap <= 0){
-        // 已站上目標
-        if(aboveMa20) return {text:"✅ 已站回均線，可分批試單（建議設停損）", cls:"ap-bull", emoji:"🎯"};
+        if(aboveMa20) return {text:"✅ 已站回確認點，可分批試單（設好停損）", cls:"ap-bull", emoji:"🎯"};
         return {text:"⚠️ 到目標價但 MA20 未站穩，小心假突破", cls:"ap-warn", emoji:"⚠️"};
       }
       if(gap <= 1) return {
-        text:"🟡 幾乎到位（差 "+gap.toFixed(1)+"%）—可小倉試單，注意若跌破均線需停損",
+        text:"🟡 幾乎到位（差 "+gap.toFixed(1)+"%）—可小倉試單，跌破均線需停損",
         cls:"ap-warn", emoji:"🟡"};
       if(gap <= 3) return {
         text:"🔔 接近確認點，再漲 "+gap.toFixed(1)+"% 就可分批進場",
@@ -2207,7 +2207,7 @@ function renderAnalysis(d, ticker){
       return {text:"⏳ 等走勢回穩，還差 "+gap.toFixed(1)+"% 到確認點", cls:"ap-flat", emoji:"⏳"};
 
     } else {
-      // target 在現價之下，等回調
+      // waitDown：target < cur，等回調
       const gap = +((cur - tgtPrice)/tgtPrice*100).toFixed(1);
       if(gap <= 0) return {text:"✅ 已回調到甜蜜點，可考慮分批買進", cls:"ap-bull", emoji:"🎯"};
       if(gap <= 1) return {
@@ -2216,7 +2216,7 @@ function renderAnalysis(d, ticker){
       if(gap <= 3) return {
         text:"🔔 快到了！再跌 "+gap.toFixed(1)+"% 就到甜蜜點",
         cls:"ap-warn", emoji:"🔔"};
-      return {text:"📈 現在偏貴，等跌 "+gap.toFixed(1)+"% 再看", cls:"ap-flat", emoji:"📈"};
+      return {text:"📈 還沒到買點，等跌 "+gap.toFixed(1)+"% 再看", cls:"ap-flat", emoji:"📈"};
     }
   }
 
@@ -2247,7 +2247,7 @@ function renderAnalysis(d, ticker){
     <div class="ap-card-title">🎯 甜蜜點建議</div>
     ${st ? `<div style="font-size:.88rem;font-weight:600;color:${st.cls==='ap-bull'?'#3fb950':st.cls==='ap-warn'?'#d29922':'#8b949e'};padding:4px 0 8px;line-height:1.4">${st.emoji} ${st.text}</div>` : ""}
     <div class="ap-row">
-      <span class="ap-label">${srvTgt && srvTgt.rsi != null && srvTgt.rsi < 50 ? "反彈確認價（漲到才買）" : "回調買進價（跌到才買）"}</span>
+      <span class="ap-label">${srvTgt && srvTgt.price != null ? (+tgt > srvTgt.price ? "反彈確認價（漲到才買）" : "回調買進價（跌到才買）") : "建議買進價"}</span>
       <span class="ap-val" style="color:#fbbf24;font-size:.92rem;font-weight:700">$${(+tgt).toLocaleString()}</span>
     </div>
     ${srvTgt && srvTgt.price!=null ? `
