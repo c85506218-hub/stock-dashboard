@@ -699,9 +699,14 @@ def get_calendar():
         _calendar_cache["ts"]   = now
     return data
 
-# ── CPI 通膨資料（Alpha Vantage，免費 demo key）──────────────────────────────
-_AV_KEY = os.environ.get("AV_API_KEY", "demo")
-AV_CPI_URL = f"https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey={_AV_KEY}"
+# ── CPI 通膨資料（FRED 聖路易聯儲，免費無 IP 限制）─────────────────────────
+# FRED series CPIAUCSL = 美國 CPI（全體城市消費者，未季調）
+# 不需要 API key 也可取得，有 key 限制更寬鬆
+_FRED_KEY = os.environ.get("FRED_API_KEY", "")  # 可選，https://fred.stlouisfed.org/docs/api/api_key.html
+_FRED_CPI_URL = (
+    "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
+    + (f"&api_key={_FRED_KEY}" if _FRED_KEY else "")
+)
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
@@ -730,18 +735,21 @@ def _calc_cpi(data):
             "history": history, "updated": datetime.now().isoformat()}
 
 def fetch_cpi():
-    # 先嘗試 API
+    # FRED CSV（fredgraph.csv），格式：DATE,CPIAUCSL
     try:
-        r = requests.get(AV_CPI_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(_FRED_CPI_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
-        data = r.json().get("data", [])
+        lines = r.text.strip().splitlines()
+        # 跳過標題列
+        rows = [l.split(",") for l in lines[1:] if l.strip()]
+        data = [{"date": row[0], "value": row[1]} for row in rows if len(row) == 2 and row[1] not in (".", "")]
         if data:
-            print(f"[CPI] API 成功，取得 {len(data)} 筆", flush=True)
+            print(f"[CPI] FRED CSV 成功，取得 {len(data)} 筆", flush=True)
             return _calc_cpi(data)
-        print("[CPI] API 回傳空資料，改用備援", flush=True)
+        print("[CPI] FRED CSV 回傳空資料", flush=True)
     except Exception as e:
-        print(f"[CPI] API 失敗: {e}", flush=True)
-        return None
+        print(f"[CPI] FRED 失敗: {e}", flush=True)
+    return None
 
 def get_cpi():
     now = time.time()
@@ -2701,8 +2709,8 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/cpi-debug":
             try:
-                r = requests.get(AV_CPI_URL, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
-                payload = json.dumps({"status": r.status_code, "key_used": _AV_KEY[:4]+"****", "body": r.text[:500]}).encode()
+                r = requests.get(_FRED_CPI_URL, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
+                payload = json.dumps({"status": r.status_code, "source": "FRED", "body": r.text[:500]}).encode()
             except Exception as e:
                 payload = json.dumps({"error": str(e)}).encode()
             self.send_response(200)
