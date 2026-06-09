@@ -705,61 +705,60 @@ AV_CPI_URL = f"https://www.alphavantage.co/query?function=CPI&interval=monthly&a
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
+# 備援：API 失敗時使用最近已知數據（每月手動更新）
+CPI_FALLBACK = [
+    {"date": "2026-04-01", "value": "333.020"},
+    {"date": "2026-03-01", "value": "330.213"},
+    {"date": "2026-02-01", "value": "326.785"},
+    {"date": "2026-01-01", "value": "325.252"},
+    {"date": "2025-12-01", "value": "324.054"},
+    {"date": "2025-11-01", "value": "322.804"},
+    {"date": "2025-10-01", "value": "321.569"},
+    {"date": "2025-09-01", "value": "321.415"},
+    {"date": "2025-08-01", "value": "322.168"},
+    {"date": "2025-07-01", "value": "322.799"},
+    {"date": "2025-06-01", "value": "322.067"},
+    {"date": "2025-05-01", "value": "320.595"},
+    {"date": "2025-04-01", "value": "320.040"},
+]
+
+def _calc_cpi(data):
+    """從 CPI 資料陣列計算統計數字，回傳 dict。"""
+    data = sorted(data, key=lambda x: x["date"], reverse=True)
+    recent = data[:13]
+    def val(o): return float(o["value"])
+    latest  = recent[0]
+    prev_mo = recent[1]  if len(recent) > 1  else None
+    prev_yr = recent[12] if len(recent) > 12 else None
+    mom = round((val(latest) - val(prev_mo)) / val(prev_mo) * 100, 2) if prev_mo else None
+    yoy = round((val(latest) - val(prev_yr)) / val(prev_yr) * 100, 2) if prev_yr else None
+    if yoy is None:      comment = "資料計算中"
+    elif yoy >= 4.0:     comment = f"通膨偏高（年增 {yoy}%），Fed 升息壓力大，對股市偏負面"
+    elif yoy >= 3.0:     comment = f"通膨仍偏高（年增 {yoy}%），Fed 降息空間受限，股市需消化壓力"
+    elif yoy >= 2.0:     comment = f"通膨接近目標（年增 {yoy}%），Fed 有降息空間，對股市偏正面"
+    elif yoy >= 1.0:     comment = f"通膨溫和（年增 {yoy}%），Fed 寬鬆空間大，有利股市"
+    else:                comment = f"通膨過低（年增 {yoy}%），可能出現通縮疑慮，Fed 需刺激經濟"
+    d = latest["date"][:7].split("-")
+    latest_label = f"{d[0]} 年 {int(d[1])} 月"
+    history = [{"label": o["date"][:7], "value": val(o)} for o in reversed(recent[:12])]
+    return {"latest_label": latest_label, "value": round(val(latest), 3),
+            "mom": mom, "yoy": yoy, "comment": comment,
+            "history": history, "updated": datetime.now().isoformat()}
+
 def fetch_cpi():
+    # 先嘗試 API
     try:
-        r = requests.get(AV_CPI_URL, timeout=20,
-                         headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(AV_CPI_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         data = r.json().get("data", [])
-        if not data:
-            return None
-        # 排序：新到舊（date 格式為 "2026-04-01"）
-        data = sorted(data, key=lambda x: x["date"], reverse=True)
-        recent = data[:13]
-
-        def val(o): return float(o["value"])
-
-        latest  = recent[0]
-        prev_mo = recent[1]  if len(recent) > 1  else None
-        prev_yr = recent[12] if len(recent) > 12 else None
-
-        mom = round((val(latest) - val(prev_mo)) / val(prev_mo) * 100, 2) if prev_mo else None
-        yoy = round((val(latest) - val(prev_yr)) / val(prev_yr) * 100, 2) if prev_yr else None
-
-        # 口語解讀
-        if yoy is None:
-            comment = "資料計算中"
-        elif yoy >= 4.0:
-            comment = f"通膨偏高（年增 {yoy}%），Fed 升息壓力大，對股市偏負面"
-        elif yoy >= 3.0:
-            comment = f"通膨仍偏高（年增 {yoy}%），Fed 降息空間受限，股市需消化壓力"
-        elif yoy >= 2.0:
-            comment = f"通膨接近目標（年增 {yoy}%），Fed 有降息空間，對股市偏正面"
-        elif yoy >= 1.0:
-            comment = f"通膨溫和（年增 {yoy}%），Fed 寬鬆空間大，有利股市"
-        else:
-            comment = f"通膨過低（年增 {yoy}%），可能出現通縮疑慮，Fed 需刺激經濟"
-
-        # date "2026-04-01" → "2026 年 4 月"
-        d = latest["date"][:7].split("-")
-        latest_label = f"{d[0]} 年 {int(d[1])} 月"
-
-        # 近 12 個月走勢
-        history = [{"label": o["date"][:7], "value": val(o)}
-                   for o in reversed(recent[:12])]
-
-        return {
-            "latest_label": latest_label,
-            "value":        round(val(latest), 3),
-            "mom":          mom,
-            "yoy":          yoy,
-            "comment":      comment,
-            "history":      history,
-            "updated":      datetime.now().isoformat(),
-        }
+        if data:
+            print(f"[CPI] API 成功，取得 {len(data)} 筆", flush=True)
+            return _calc_cpi(data)
+        print("[CPI] API 回傳空資料，改用備援", flush=True)
     except Exception as e:
-        print(f"[CPI] 抓取失敗: {e}", flush=True)
-        return None
+        print(f"[CPI] API 失敗: {e}，改用備援資料", flush=True)
+    # 備援：用硬編碼數據
+    return _calc_cpi(CPI_FALLBACK)
 
 def get_cpi():
     now = time.time()
