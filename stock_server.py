@@ -699,6 +699,83 @@ def get_calendar():
         _calendar_cache["ts"]   = now
     return data
 
+# ── CPI 通膨資料 ────────────────────────────────────────────────────────────────
+BLS_CPI_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/CUSR0000SA0"
+_cpi_cache: dict = {"data": None, "ts": 0}
+CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
+
+def fetch_cpi():
+    try:
+        r = requests.get(BLS_CPI_URL, timeout=15,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        series = r.json().get("Results", {}).get("series", [{}])[0]
+        obs = series.get("data", [])
+        if not obs:
+            return None
+        # 排序：新到舊
+        obs = sorted(obs, key=lambda x: (x["year"], x["period"]), reverse=True)
+        # 取最近 13 筆（算年增率需要）
+        recent = obs[:13]
+
+        def val(o): return float(o["value"])
+
+        latest   = recent[0]
+        prev_mo  = recent[1] if len(recent) > 1 else None
+        prev_yr  = recent[12] if len(recent) > 12 else None
+
+        mom = round((val(latest) - val(prev_mo)) / val(prev_mo) * 100, 2) if prev_mo else None
+        yoy = round((val(latest) - val(prev_yr)) / val(prev_yr) * 100, 2) if prev_yr else None
+
+        # 趨勢：最近 3 個月 MoM 平均
+        mom3 = []
+        for i in range(min(3, len(recent)-1)):
+            mom3.append((val(recent[i]) - val(recent[i+1])) / val(recent[i+1]) * 100)
+        trend_avg = round(sum(mom3) / len(mom3), 2) if mom3 else None
+
+        # 口語解讀
+        if yoy is None:
+            comment = "資料計算中"
+        elif yoy >= 4.0:
+            comment = f"通膨偏高（年增 {yoy}%），Fed 升息壓力大，對股市偏負面"
+        elif yoy >= 3.0:
+            comment = f"通膨仍偏高（年增 {yoy}%），Fed 降息空間受限，股市需消化壓力"
+        elif yoy >= 2.0:
+            comment = f"通膨接近目標（年增 {yoy}%），Fed 有降息空間，對股市偏正面"
+        elif yoy >= 1.0:
+            comment = f"通膨溫和（年增 {yoy}%），Fed 寬鬆空間大，有利股市"
+        else:
+            comment = f"通膨過低（年增 {yoy}%），可能出現通縮疑慮，Fed 需刺激經濟"
+
+        # 最近 12 個月歷史（用於趨勢顯示）
+        history = [{"label": f"{o['year']}/{o['period'].replace('M','')}",
+                    "value": val(o)} for o in reversed(recent[:12])]
+
+        return {
+            "latest_label": f"{latest['year']} 年 {int(latest['period'].replace('M',''))} 月",
+            "value":        round(val(latest), 3),
+            "mom":          mom,
+            "yoy":          yoy,
+            "trend_avg":    trend_avg,
+            "comment":      comment,
+            "history":      history,
+            "updated":      datetime.now().isoformat(),
+        }
+    except Exception as e:
+        print(f"[CPI] 抓取失敗: {e}", flush=True)
+        return None
+
+def get_cpi():
+    now = time.time()
+    with _cache_lock:
+        if _cpi_cache["data"] and now - _cpi_cache["ts"] < CPI_CACHE_SECONDS:
+            return _cpi_cache["data"]
+        data = fetch_cpi()
+        if data:
+            _cpi_cache["data"] = data
+            _cpi_cache["ts"]   = now
+        return _cpi_cache["data"]
+
 def get_house_data():
     now = time.time()
     with _cache_lock:
@@ -1344,6 +1421,28 @@ tr:hover td { background: #1d2338; }
 .house-note { font-size: .72rem; color: #475569; padding: 8px 16px 12px; }
 
 /* ── 行事曆 ── */
+/* ── CPI 通膨 ── */
+.cpi-wrap { margin-top: 28px; }
+.cpi-title { font-size: .78rem; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display:flex; align-items:center; gap:10px; }
+.cpi-src { font-size: .66rem; color: #475569; font-weight: 400; }
+.cpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.cpi-card { background: #161b27; border: 1px solid #252d42; border-radius: 14px; padding: 16px 20px; }
+.cpi-card.hot  { border-color: #7f1d1d; background: #1a0a0a; }
+.cpi-card.warm { border-color: #78350f; background: #150f00; }
+.cpi-card.good { border-color: #14532d; background: #0a1a0e; }
+.cpi-card.cold { border-color: #1e3a5f; background: #080e1a; }
+.cpi-big { font-size: 2rem; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; margin-bottom: 4px; }
+.cpi-label { font-size: .7rem; color: #64748b; margin-bottom: 12px; }
+.cpi-row { display:flex; justify-content:space-between; font-size:.8rem; padding:5px 0; border-top:1px solid #1a1f30; }
+.cpi-row:first-of-type { border-top:none; }
+.cpi-comment { font-size: .78rem; color: #94a3b8; margin-top: 10px; padding-top: 10px; border-top: 1px solid #1a1f30; line-height: 1.6; }
+.cpi-bar-wrap { margin-top: 12px; }
+.cpi-bar-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+.cpi-bar-label { font-size:.65rem; color:#475569; width:55px; text-align:right; flex-shrink:0; }
+.cpi-bar-track { flex:1; height:5px; background:#1e2438; border-radius:3px; overflow:hidden; }
+.cpi-bar-fill  { height:100%; border-radius:3px; transition:width .4s; }
+.cpi-bar-val   { font-size:.65rem; color:#94a3b8; width:40px; font-variant-numeric:tabular-nums; }
+
 .cal-wrap { margin-top: 28px; }
 .cal-title { font-size: .78rem; font-weight: 700; color: #f8fafc; margin-bottom: 14px; }
 .cal-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
@@ -1507,6 +1606,14 @@ tr:hover td { background: #1d2338; }
 
 <div id="ai-market"><strong>📊 今日市場概況</strong><span id="ai-text">分析中…</span></div>
 <div class="grid" id="grid"><div class="loading">⏳ 正在抓取最新股價與新聞…</div></div>
+
+<!-- CPI 通膨區塊 -->
+<div class="cpi-wrap">
+  <div class="cpi-title">📊 美國 CPI 通膨指數
+    <span class="cpi-src">資料來源：美國勞工統計局 (BLS)，每月公布</span>
+  </div>
+  <div id="cpi-grid"><div class="loading">⏳ 載入 CPI 資料…</div></div>
+</div>
 
 <!-- 行事曆區塊 -->
 <!-- ARK 持股 -->
@@ -1792,6 +1899,55 @@ function tick(){
     document.getElementById("countdown").textContent=`（${--timer}s 後刷新）`;
     if(timer<=0){ load(); timer=REFRESH; }
   },1000);
+}
+
+function renderCpi(d){
+  const el = document.getElementById("cpi-grid");
+  if(!d){ el.innerHTML=`<div class="loading">⚠️ CPI 資料暫無法取得</div>`; return; }
+
+  // 判斷顏色主題
+  const yoy = d.yoy;
+  let cls = "good", arrow = "↗", arrowColor = "#4ade80";
+  if(yoy >= 4.0)      { cls="hot";  arrow="🔴"; arrowColor="#f87171"; }
+  else if(yoy >= 3.0) { cls="warm"; arrow="🟡"; arrowColor="#fbbf24"; }
+  else if(yoy >= 2.0) { cls="good"; arrow="🟢"; arrowColor="#4ade80"; }
+  else                { cls="cold"; arrow="🔵"; arrowColor="#60a5fa"; }
+
+  const fmt1 = v => v!=null ? (v>=0?"+":"")+v.toFixed(2)+"%" : "--";
+
+  // 趨勢長條圖（最近 12 個月）
+  const hist = d.history || [];
+  const maxV = Math.max(...hist.map(h=>h.value));
+  const minV = Math.min(...hist.map(h=>h.value));
+  const barHtml = hist.map(h => {
+    const pct = maxV > minV ? Math.round((h.value - minV) / (maxV - minV) * 100) : 50;
+    return `<div class="cpi-bar-row">
+      <span class="cpi-bar-label">${h.label}</span>
+      <div class="cpi-bar-track"><div class="cpi-bar-fill" style="width:${pct}%;background:${arrowColor}88"></div></div>
+      <span class="cpi-bar-val">${h.value.toFixed(1)}</span>
+    </div>`;
+  }).join("");
+
+  document.getElementById("cpi-grid").innerHTML = `
+  <div class="cpi-grid">
+    <div class="cpi-card ${cls}">
+      <div class="cpi-big" style="color:${arrowColor}">${yoy!=null?(yoy>=0?"+":"")+yoy.toFixed(2)+"%":"--"}</div>
+      <div class="cpi-label">年增率（YoY）— ${d.latest_label}</div>
+      <div class="cpi-row"><span style="color:#64748b">月增率（MoM）</span><span style="color:#f1f5f9;font-weight:600">${fmt1(d.mom)}</span></div>
+      <div class="cpi-row"><span style="color:#64748b">Fed 目標</span><span style="color:#94a3b8">2.00%</span></div>
+      <div class="cpi-row"><span style="color:#64748b">距離目標</span><span style="color:${arrowColor};font-weight:600">${yoy!=null?(yoy-2>=0?"+":"")+((yoy-2).toFixed(2))+"%":"--"}</span></div>
+      <div class="cpi-comment">${arrow} ${d.comment}</div>
+    </div>
+    <div class="cpi-card">
+      <div style="font-size:.7rem;color:#475569;margin-bottom:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase">近 12 個月走勢</div>
+      ${barHtml}
+    </div>
+  </div>`;
+}
+
+async function loadCpi(){
+  try{ renderCpi(await (await fetch("/cpi")).json()); }
+  catch{ document.getElementById("cpi-grid").innerHTML=`<div class="loading">⚠️ CPI 資料連線失敗</div>`; }
 }
 
 function renderCal(events){
@@ -2500,7 +2656,7 @@ function slRender(){
 }
 function slUpdatePrices(quotes){_slQuotes=quotes;slRender();}
 
-load(); loadHouse(); loadCal(); loadTheme(); loadArk(); loadTargets(); tick();
+load(); loadHouse(); loadCal(); loadCpi(); loadTheme(); loadArk(); loadTargets(); tick();
 wbRender(); slRender();
 // 延遲載入籌碼（不阻塞主要股價顯示）
 setTimeout(loadChips, 3000);
@@ -2555,6 +2711,12 @@ class Handler(BaseHTTPRequestHandler):
             with _bg_lock:
                 data = _bg_cache["theme"]
             payload = safe_json(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/cpi":
+            payload = safe_json(get_cpi()).encode()
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
