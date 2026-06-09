@@ -700,7 +700,7 @@ def get_calendar():
     return data
 
 # ── CPI 通膨資料（Alpha Vantage，免費 demo key）──────────────────────────────
-_AV_KEY = os.environ.get("AV_API_KEY", "demo")
+_AV_KEY = os.environ.get("AV_API_KEY", "4IO58832MBFF5FM2")
 AV_CPI_URL = f"https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey={_AV_KEY}"
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
