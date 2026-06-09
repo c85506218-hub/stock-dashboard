@@ -123,6 +123,7 @@ WATCHLIST = [
     ("MRNA",    "MRNA (Moderna)",           "美股－多元",    "USD"),
     ("COIN",    "COIN (Coinbase)",          "美股－多元",    "USD"),
     ("UMAC",    "UMAC (Unusual Machines)",  "美股－多元",    "USD"),
+    ("BRK-B",   "BRK-B (波克夏·海瑟威)",    "美股－多元",    "USD"),
 ]
 
 # ── 未來主題投資（玻璃基板 AI 封裝供應鏈）────────────────────────────────────
