@@ -2183,17 +2183,21 @@ function renderAnalysis(d, ticker){
     const cur = srv.price;
     const rsi = srv.rsi;
     const ma20 = srv.ma20;
-    const isRecovery = rsi != null && rsi < 50;
-    if(isRecovery){
+    // RSI < 50：走勢偏弱，target = MA60*1.01（高於現價），等價格「反彈回」均線確認才買
+    // RSI >= 50：走勢偏強，target = 現價*0.96（低於現價），等回調再買
+    const waitingForRecovery = rsi != null && rsi < 50; // target > cur，等漲上去
+    if(waitingForRecovery){
       const aboveMA20 = ma20 ? cur >= ma20 : true;
-      if(cur >= tgtPrice && aboveMA20) return {text:"✅ 已到甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
+      if(cur >= tgtPrice && aboveMA20) return {text:"✅ 已站回均線甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
       if(cur >= tgtPrice) return {text:"價格到了但還不穩，再觀察", cls:"ap-warn", emoji:"⚠️"};
       const gap = ((tgtPrice - cur)/cur*100).toFixed(1);
-      return {text:`還沒到，距甜蜜點還差 ${gap}%`, cls:"ap-flat", emoji:"⏳"};
+      if(+gap <= 3) return {text:`快回穩了！再漲 ${gap}% 到確認買點`, cls:"ap-warn", emoji:"🔔"};
+      return {text:`等走勢回穩，還差 ${gap}% 到確認買點`, cls:"ap-flat", emoji:"⏳"};
     } else {
+      // target < cur，等回調跌到 target
       if(cur <= tgtPrice) return {text:"✅ 已回調到甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
       const gap = ((cur - tgtPrice)/tgtPrice*100).toFixed(1);
-      if(+gap <= 5) return {text:`快到了！再跌 ${gap}% 就到甜蜜點`, cls:"ap-warn", emoji:"🔔"};
+      if(+gap <= 3) return {text:`快到了！再跌 ${gap}% 就到甜蜜點`, cls:"ap-warn", emoji:"🔔"};
       return {text:`現在太貴，等跌 ${gap}% 再看`, cls:"ap-flat", emoji:"📈"};
     }
   }
@@ -2220,7 +2224,7 @@ function renderAnalysis(d, ticker){
     <div class="ap-card-title">🎯 甜蜜點建議</div>
     ${st ? `<div style="font-size:.88rem;font-weight:600;color:${st.cls==='ap-bull'?'#3fb950':st.cls==='ap-warn'?'#d29922':'#8b949e'};padding:4px 0 8px;line-height:1.4">${st.emoji} ${st.text}</div>` : ""}
     <div class="ap-row">
-      <span class="ap-label">建議買進價</span>
+      <span class="ap-label">${srvTgt && srvTgt.rsi != null && srvTgt.rsi < 50 ? "反彈確認價（漲到才買）" : "回調買進價（跌到才買）"}</span>
       <span class="ap-val" style="color:#fbbf24;font-size:.92rem;font-weight:700">$${(+tgt).toLocaleString()}</span>
     </div>
     ${srvTgt && srvTgt.price!=null ? `
