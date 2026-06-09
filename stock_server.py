@@ -2183,22 +2183,40 @@ function renderAnalysis(d, ticker){
     const cur = srv.price;
     const rsi = srv.rsi;
     const ma20 = srv.ma20;
-    // RSI < 50：走勢偏弱，target = MA60*1.01（高於現價），等價格「反彈回」均線確認才買
-    // RSI >= 50：走勢偏強，target = 現價*0.96（低於現價），等回調再買
-    const waitingForRecovery = rsi != null && rsi < 50; // target > cur，等漲上去
-    if(waitingForRecovery){
-      const aboveMA20 = ma20 ? cur >= ma20 : true;
-      if(cur >= tgtPrice && aboveMA20) return {text:"✅ 已站回均線甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
-      if(cur >= tgtPrice) return {text:"價格到了但還不穩，再觀察", cls:"ap-warn", emoji:"⚠️"};
-      const gap = ((tgtPrice - cur)/cur*100).toFixed(1);
-      if(+gap <= 3) return {text:`快回穩了！再漲 ${gap}% 到確認買點`, cls:"ap-warn", emoji:"🔔"};
-      return {text:`等走勢回穩，還差 ${gap}% 到確認買點`, cls:"ap-flat", emoji:"⏳"};
+    const ma60 = srv.ma60;
+
+    // RSI < 50：走弱，target = MA60*1.01（通常高於現價），等價格「站回均線」確認
+    // RSI >= 50：走強，target = 現價*0.96（低於現價），等回調再買
+    const waitForRecovery = rsi != null && rsi < 50;
+
+    if(waitForRecovery){
+      // target 在現價之上，等漲回去
+      const gap = +((tgtPrice - cur)/cur*100).toFixed(1);
+      const aboveMa20 = ma20 ? cur >= ma20 : true;
+      if(gap <= 0){
+        // 已站上目標
+        if(aboveMa20) return {text:"✅ 已站回均線，可分批試單（建議設停損）", cls:"ap-bull", emoji:"🎯"};
+        return {text:"⚠️ 到目標價但 MA20 未站穩，小心假突破", cls:"ap-warn", emoji:"⚠️"};
+      }
+      if(gap <= 1) return {
+        text:"🟡 幾乎到位（差 "+gap.toFixed(1)+"%）—可小倉試單，注意若跌破均線需停損",
+        cls:"ap-warn", emoji:"🟡"};
+      if(gap <= 3) return {
+        text:"🔔 接近確認點，再漲 "+gap.toFixed(1)+"% 就可分批進場",
+        cls:"ap-warn", emoji:"🔔"};
+      return {text:"⏳ 等走勢回穩，還差 "+gap.toFixed(1)+"% 到確認點", cls:"ap-flat", emoji:"⏳"};
+
     } else {
-      // target < cur，等回調跌到 target
-      if(cur <= tgtPrice) return {text:"✅ 已回調到甜蜜點，可考慮買進", cls:"ap-bull", emoji:"🎯"};
-      const gap = ((cur - tgtPrice)/tgtPrice*100).toFixed(1);
-      if(+gap <= 3) return {text:`快到了！再跌 ${gap}% 就到甜蜜點`, cls:"ap-warn", emoji:"🔔"};
-      return {text:`現在太貴，等跌 ${gap}% 再看`, cls:"ap-flat", emoji:"📈"};
+      // target 在現價之下，等回調
+      const gap = +((cur - tgtPrice)/tgtPrice*100).toFixed(1);
+      if(gap <= 0) return {text:"✅ 已回調到甜蜜點，可考慮分批買進", cls:"ap-bull", emoji:"🎯"};
+      if(gap <= 1) return {
+        text:"🟡 幾乎到位（差 "+gap.toFixed(1)+"%）—可小倉試單",
+        cls:"ap-warn", emoji:"🟡"};
+      if(gap <= 3) return {
+        text:"🔔 快到了！再跌 "+gap.toFixed(1)+"% 就到甜蜜點",
+        cls:"ap-warn", emoji:"🔔"};
+      return {text:"📈 現在偏貴，等跌 "+gap.toFixed(1)+"% 再看", cls:"ap-flat", emoji:"📈"};
     }
   }
 
@@ -2208,14 +2226,19 @@ function renderAnalysis(d, ticker){
     const cur = srv.price;
     const ma20 = srv.ma20;
     const ma60 = srv.ma60;
-    if(r > 75) return "📌 最近漲太快，先等它冷卻一下再進場";
-    if(r > 65) return "📌 漲勢偏強，等小回調再買比較安心";
+    // 注意事項：根據 RSI 區間給出具體風險提示
+    if(r > 75) return "⚠️ 短線嚴重超買，進場需注意：① 不宜重倉 ② 設好停損 ③ 等量縮再進";
+    if(r > 65) return "⚠️ 漲勢偏強，注意：① 回調幅度可能 5–10% ② 建議分批進場 ③ 避免追高";
     if(r >= 50){
-      if(cur && ma20 && cur < ma20) return "📌 已跌破短期均線，等它站穩再進";
-      return "📌 走勢健康，等小跌就是不錯的買點";
+      if(cur && ma20 && cur < ma20) return "⚠️ 走勢尚可但跌破 MA20，注意：① 可能繼續下探 ② 先觀察能否收復均線 ③ 小倉進";
+      return "✅ 走勢健康，注意：① 分批買降低成本 ② 停損設在 MA20 下方 ③ 量能配合更佳";
     }
-    if(r >= 40) return "📌 走勢偏弱，等止跌回穩的訊號再進";
-    return "📌 跌很深了，別急著接，等它先止跌再說";
+    if(r >= 40){
+      const nearMa60 = ma60 && cur >= ma60 * 0.99 && cur <= ma60 * 1.02;
+      if(nearMa60) return "🟡 在均線附近整理，注意：① 可小倉試單 ② 停損設在 MA60 下方 2% ③ 等站穩 MA60 再加倉";
+      return "⚠️ 走勢偏弱，注意：① 不急著進 ② 等出現止跌 K 棒 ③ MA5 翻揚才是進場訊號";
+    }
+    return "🚨 超賣但走勢仍弱，注意：① 可能還有一段下跌 ② 分批抄底需設嚴格停損 ③ 等 RSI 回到 40 再考慮";
   }
 
   const st = srvTgt ? sweetStatus(srvTgt, +tgt) : null;
