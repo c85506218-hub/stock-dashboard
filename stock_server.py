@@ -68,7 +68,7 @@ WATCHLIST = [
     # ── 台灣ETF－主題 ─────────────────────────────────────────────
     ("00881.TW",  "國泰台灣科技龍頭 00881", "台灣ETF－主題", "NTD"),
     ("00850.TW",  "元大臺灣ESG永續 00850",  "台灣ETF－主題", "NTD"),
-    ("00687B.TW", "國泰20年美債 00687B",    "台灣ETF－主題", "NTD"),
+    # ("00687B.TW", "國泰20年美債 00687B", "台灣ETF－主題", "NTD"),  # Yahoo 回報已下市，暫停追蹤
     ("00635U.TW", "期元大S&P黃金 00635U",   "台灣ETF－主題", "NTD"),
     ("00738U.TW", "期元大道瓊白銀 00738U",  "台灣ETF－主題", "NTD"),
 
@@ -77,7 +77,7 @@ WATCHLIST = [
     ("2454.TW",  "聯發科 2454",             "台股－半導體",  "NTD"),
     ("2303.TW",  "聯電 2303",               "台股－半導體",  "NTD"),
     ("2344.TW",  "華邦電 2344",             "台股－半導體",  "NTD"),
-    ("6643.TW",  "M31 6643",                "台股－半導體",  "NTD"),
+    ("6643.TW",  "M31 6643",                "台股－半導體",  "NTD"),  # 注意：Yahoo 回報可能下市
     ("3017.TW",  "奇鋐 3017",               "台股－半導體",  "NTD"),
 
     # ── 台股－電子製造 ────────────────────────────────────────────
@@ -700,7 +700,8 @@ def get_calendar():
     return data
 
 # ── CPI 通膨資料（Alpha Vantage，免費 demo key）──────────────────────────────
-AV_CPI_URL = "https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey=demo"
+_AV_KEY = os.environ.get("AV_API_KEY", "demo")
+AV_CPI_URL = f"https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey={_AV_KEY}"
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
