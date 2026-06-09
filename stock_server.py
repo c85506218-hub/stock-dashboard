@@ -2717,6 +2717,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type","application/json")
             self.send_header("Access-Control-Allow-Origin","*")
             self.end_headers(); self.wfile.write(payload)
+        elif self.path == "/cpi-debug":
+            try:
+                r = requests.get(AV_CPI_URL, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
+                payload = json.dumps({"status": r.status_code, "key_used": _AV_KEY[:4]+"****", "body": r.text[:500]}).encode()
+            except Exception as e:
+                payload = json.dumps({"error": str(e)}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Access-Control-Allow-Origin","*")
+            self.end_headers(); self.wfile.write(payload)
         elif self.path == "/house":
             payload = safe_json(get_house_data()).encode()
             self.send_response(200)
