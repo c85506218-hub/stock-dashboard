@@ -699,39 +699,31 @@ def get_calendar():
         _calendar_cache["ts"]   = now
     return data
 
-# ── CPI 通膨資料 ────────────────────────────────────────────────────────────────
-BLS_CPI_URL = "https://api.bls.gov/publicAPI/v1/timeseries/data/CUSR0000SA0"
+# ── CPI 通膨資料（Alpha Vantage，免費 demo key）──────────────────────────────
+AV_CPI_URL = "https://www.alphavantage.co/query?function=CPI&interval=monthly&apikey=demo"
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
 def fetch_cpi():
     try:
-        r = requests.get(BLS_CPI_URL, timeout=15,
+        r = requests.get(AV_CPI_URL, timeout=20,
                          headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
-        series = r.json().get("Results", {}).get("series", [{}])[0]
-        obs = series.get("data", [])
-        if not obs:
+        data = r.json().get("data", [])
+        if not data:
             return None
-        # 排序：新到舊
-        obs = sorted(obs, key=lambda x: (x["year"], x["period"]), reverse=True)
-        # 取最近 13 筆（算年增率需要）
-        recent = obs[:13]
+        # 排序：新到舊（date 格式為 "2026-04-01"）
+        data = sorted(data, key=lambda x: x["date"], reverse=True)
+        recent = data[:13]
 
         def val(o): return float(o["value"])
 
-        latest   = recent[0]
-        prev_mo  = recent[1] if len(recent) > 1 else None
-        prev_yr  = recent[12] if len(recent) > 12 else None
+        latest  = recent[0]
+        prev_mo = recent[1]  if len(recent) > 1  else None
+        prev_yr = recent[12] if len(recent) > 12 else None
 
         mom = round((val(latest) - val(prev_mo)) / val(prev_mo) * 100, 2) if prev_mo else None
         yoy = round((val(latest) - val(prev_yr)) / val(prev_yr) * 100, 2) if prev_yr else None
-
-        # 趨勢：最近 3 個月 MoM 平均
-        mom3 = []
-        for i in range(min(3, len(recent)-1)):
-            mom3.append((val(recent[i]) - val(recent[i+1])) / val(recent[i+1]) * 100)
-        trend_avg = round(sum(mom3) / len(mom3), 2) if mom3 else None
 
         # 口語解讀
         if yoy is None:
@@ -747,16 +739,19 @@ def fetch_cpi():
         else:
             comment = f"通膨過低（年增 {yoy}%），可能出現通縮疑慮，Fed 需刺激經濟"
 
-        # 最近 12 個月歷史（用於趨勢顯示）
-        history = [{"label": f"{o['year']}/{o['period'].replace('M','')}",
-                    "value": val(o)} for o in reversed(recent[:12])]
+        # date "2026-04-01" → "2026 年 4 月"
+        d = latest["date"][:7].split("-")
+        latest_label = f"{d[0]} 年 {int(d[1])} 月"
+
+        # 近 12 個月走勢
+        history = [{"label": o["date"][:7], "value": val(o)}
+                   for o in reversed(recent[:12])]
 
         return {
-            "latest_label": f"{latest['year']} 年 {int(latest['period'].replace('M',''))} 月",
+            "latest_label": latest_label,
             "value":        round(val(latest), 3),
             "mom":          mom,
             "yoy":          yoy,
-            "trend_avg":    trend_avg,
             "comment":      comment,
             "history":      history,
             "updated":      datetime.now().isoformat(),
