@@ -705,22 +705,6 @@ AV_CPI_URL = f"https://www.alphavantage.co/query?function=CPI&interval=monthly&a
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
-# 備援：API 失敗時使用最近已知數據（每月手動更新）
-CPI_FALLBACK = [
-    {"date": "2026-04-01", "value": "333.020"},
-    {"date": "2026-03-01", "value": "330.213"},
-    {"date": "2026-02-01", "value": "326.785"},
-    {"date": "2026-01-01", "value": "325.252"},
-    {"date": "2025-12-01", "value": "324.054"},
-    {"date": "2025-11-01", "value": "322.804"},
-    {"date": "2025-10-01", "value": "321.569"},
-    {"date": "2025-09-01", "value": "321.415"},
-    {"date": "2025-08-01", "value": "322.168"},
-    {"date": "2025-07-01", "value": "322.799"},
-    {"date": "2025-06-01", "value": "322.067"},
-    {"date": "2025-05-01", "value": "320.595"},
-    {"date": "2025-04-01", "value": "320.040"},
-]
 
 def _calc_cpi(data):
     """從 CPI 資料陣列計算統計數字，回傳 dict。"""
@@ -756,9 +740,8 @@ def fetch_cpi():
             return _calc_cpi(data)
         print("[CPI] API 回傳空資料，改用備援", flush=True)
     except Exception as e:
-        print(f"[CPI] API 失敗: {e}，改用備援資料", flush=True)
-    # 備援：用硬編碼數據
-    return _calc_cpi(CPI_FALLBACK)
+        print(f"[CPI] API 失敗: {e}", flush=True)
+        return None
 
 def get_cpi():
     now = time.time()
