@@ -2216,23 +2216,33 @@ function renderAnalysis(d, ticker){
       if(gap <= 3) return {
         text:"🔔 快到了！再跌 "+gap.toFixed(1)+"% 就到甜蜜點",
         cls:"ap-warn", emoji:"🔔"};
+      if(gap > 25) return {text:"🚫 現價離買點太遠（差 "+gap.toFixed(0)+"%），暫不考慮進場", cls:"ap-flat", emoji:"🚫"};
       return {text:"📈 還沒到買點，等跌 "+gap.toFixed(1)+"% 再看", cls:"ap-flat", emoji:"📈"};
     }
   }
 
-  function sweetAdvice(srv){
+  function sweetAdvice(srv, tgtPrice){
     if(!srv || srv.rsi==null) return "";
     const r = srv.rsi;
     const cur = srv.price;
     const ma20 = srv.ma20;
     const ma60 = srv.ma60;
-    // 注意事項：根據 RSI 區間給出具體風險提示
+    const waitDown = tgtPrice != null && tgtPrice < cur; // 等跌回調
+
     if(r > 75) return "⚠️ 短線嚴重超買，進場需注意：① 不宜重倉 ② 設好停損 ③ 等量縮再進";
     if(r > 65) return "⚠️ 漲勢偏強，注意：① 回調幅度可能 5–10% ② 建議分批進場 ③ 避免追高";
     if(r >= 50){
       if(cur && ma20 && cur < ma20) return "⚠️ 走勢尚可但跌破 MA20，注意：① 可能繼續下探 ② 先觀察能否收復均線 ③ 小倉進";
       return "✅ 走勢健康，注意：① 分批買降低成本 ② 停損設在 MA20 下方 ③ 量能配合更佳";
     }
+    // RSI < 50 區段：需區分「等跌回調」vs「等漲回穩」
+    if(waitDown){
+      // 目標低於現價：現價偏高，等回調，不是等止跌
+      const gap = ((cur - tgtPrice)/tgtPrice*100).toFixed(0);
+      if(+gap > 20) return `⚠️ 目前偏貴（距買點 ${gap}%），耐心等待大幅回調，勿追高`;
+      return "⚠️ 走勢偏弱但現價偏高，注意：① 等回調到買點再進 ② 停損設在目標價下方 ③ 分批進場";
+    }
+    // 等漲回穩（目標高於現價）
     if(r >= 40){
       const nearMa60 = ma60 && cur >= ma60 * 0.99 && cur <= ma60 * 1.02;
       if(nearMa60) return "🟡 在均線附近整理，注意：① 可小倉試單 ② 停損設在 MA60 下方 2% ③ 等站穩 MA60 再加倉";
@@ -2256,7 +2266,7 @@ function renderAnalysis(d, ticker){
       <span class="ap-val ap-flat">$${(+srvTgt.price).toLocaleString()}</span>
     </div>` : ""}
     <div style="font-size:.72rem;color:#475569;padding:7px 0 2px;line-height:1.6;border-top:1px solid #21262d;margin-top:4px">
-      ${srvTgt ? sweetAdvice(srvTgt) : ""}
+      ${srvTgt ? sweetAdvice(srvTgt, +tgt) : ""}
     </div>
   </div>` : "";
 
