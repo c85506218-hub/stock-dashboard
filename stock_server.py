@@ -731,6 +731,24 @@ def _calc_cpi(data):
             "mom": mom, "yoy": yoy, "comment": comment,
             "history": history, "updated": datetime.now().isoformat()}
 
+# 靜態備援資料（每次更新部署時手動補上最新值，確保無 API 時仍能顯示）
+# 來源：https://www.bls.gov/cpi/  格式：{"date":"YYYY-MM-01","value":"xxx"}
+_CPI_STATIC_FALLBACK = [
+    {"date":"2026-04-01","value":"332.407"},
+    {"date":"2026-03-01","value":"330.293"},
+    {"date":"2026-02-01","value":"327.460"},
+    {"date":"2026-01-01","value":"326.588"},
+    {"date":"2025-12-01","value":"326.031"},
+    {"date":"2025-11-01","value":"325.716"},
+    {"date":"2025-10-01","value":"325.588"},
+    {"date":"2025-09-01","value":"324.831"},
+    {"date":"2025-08-01","value":"324.534"},
+    {"date":"2025-07-01","value":"323.358"},
+    {"date":"2025-06-01","value":"322.975"},
+    {"date":"2025-05-01","value":"322.397"},
+    {"date":"2025-04-01","value":"322.625"},
+]
+
 def fetch_cpi():
     # BLS 公開 API（美國勞工統計局，政府資料，無 IP 封鎖）
     try:
@@ -764,7 +782,11 @@ def fetch_cpi():
         print("[CPI] BLS 回傳空資料", flush=True)
     except Exception as e:
         print(f"[CPI] BLS 失敗: {e}", flush=True)
-    return None
+    # 備援：使用靜態資料（程式碼內嵌，部署時手動更新）
+    print("[CPI] 使用靜態備援資料", flush=True)
+    result = _calc_cpi(_CPI_STATIC_FALLBACK)
+    result["note"] = "static"  # 標記來源
+    return result
 
 def get_cpi():
     now = time.time()
@@ -1938,6 +1960,7 @@ function renderCpi(d){
       <div class="cpi-row"><span style="color:#64748b">Fed 目標</span><span style="color:#94a3b8">2.00%</span></div>
       <div class="cpi-row"><span style="color:#64748b">距離目標</span><span style="color:${arrowColor};font-weight:600">${yoy!=null?(yoy-2>=0?"+":"")+((yoy-2).toFixed(2))+"%":"--"}</span></div>
       <div class="cpi-comment">${arrow} ${d.comment}</div>
+      ${d.note==="static" ? `<div style="font-size:.68rem;color:#475569;margin-top:8px">📌 資料來源：靜態備援（BLS API 額度已用盡）</div>` : ""}
     </div>
     <div class="cpi-card">
       <div style="font-size:.7rem;color:#475569;margin-bottom:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase">近 12 個月走勢</div>
