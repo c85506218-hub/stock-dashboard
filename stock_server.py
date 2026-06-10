@@ -699,14 +699,11 @@ def get_calendar():
         _calendar_cache["ts"]   = now
     return data
 
-# ── CPI 通膨資料（FRED 聖路易聯儲，免費無 IP 限制）─────────────────────────
-# FRED series CPIAUCSL = 美國 CPI（全體城市消費者，未季調）
-# 不需要 API key 也可取得，有 key 限制更寬鬆
-_FRED_KEY = os.environ.get("FRED_API_KEY", "")  # 可選，https://fred.stlouisfed.org/docs/api/api_key.html
-_FRED_CPI_URL = (
-    "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
-    + (f"&api_key={_FRED_KEY}" if _FRED_KEY else "")
-)
+# ── CPI 通膨資料（BLS 美國勞工統計局官方 API）───────────────────────────────
+# Series CUSR0000SA0 = CPI-U All Items，每月公布，政府開放 API 無 IP 限制
+# v2 版本需要 Registration key（可免費申請），v1 每日限 500 次
+_BLS_KEY = os.environ.get("BLS_API_KEY", "")
+_BLS_CPI_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/CUSR0000SA0"
 _cpi_cache: dict = {"data": None, "ts": 0}
 CPI_CACHE_SECONDS = 3600 * 12  # 每 12 小時更新（CPI 每月公布）
 
@@ -735,20 +732,38 @@ def _calc_cpi(data):
             "history": history, "updated": datetime.now().isoformat()}
 
 def fetch_cpi():
-    # FRED CSV（fredgraph.csv），格式：DATE,CPIAUCSL
+    # BLS 公開 API（美國勞工統計局，政府資料，無 IP 封鎖）
     try:
-        r = requests.get(_FRED_CPI_URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        import json as _json
+        now_year = datetime.now().year
+        payload = {
+            "seriesid": ["CUSR0000SA0"],
+            "startyear": str(now_year - 2),
+            "endyear": str(now_year),
+        }
+        if _BLS_KEY:
+            payload["registrationkey"] = _BLS_KEY
+        r = requests.post(_BLS_CPI_URL, json=payload, timeout=20,
+                          headers={"Content-Type": "application/json"})
         r.raise_for_status()
-        lines = r.text.strip().splitlines()
-        # 跳過標題列
-        rows = [l.split(",") for l in lines[1:] if l.strip()]
-        data = [{"date": row[0], "value": row[1]} for row in rows if len(row) == 2 and row[1] not in (".", "")]
+        j = r.json()
+        if j.get("status") != "REQUEST_SUCCEEDED":
+            print(f"[CPI] BLS 回傳非成功: {j.get('status')} {j.get('message')}", flush=True)
+            return None
+        series_data = j["Results"]["series"][0]["data"]
+        # BLS 格式：{"year":"2026","period":"M04","periodName":"April","value":"332.407",...}
+        data = []
+        for row in series_data:
+            if row["period"] == "M13":  # 年平均，跳過
+                continue
+            month = row["period"][1:]  # "04"
+            data.append({"date": f"{row['year']}-{month}-01", "value": row["value"]})
         if data:
-            print(f"[CPI] FRED CSV 成功，取得 {len(data)} 筆", flush=True)
+            print(f"[CPI] BLS 成功，取得 {len(data)} 筆", flush=True)
             return _calc_cpi(data)
-        print("[CPI] FRED CSV 回傳空資料", flush=True)
+        print("[CPI] BLS 回傳空資料", flush=True)
     except Exception as e:
-        print(f"[CPI] FRED 失敗: {e}", flush=True)
+        print(f"[CPI] BLS 失敗: {e}", flush=True)
     return None
 
 def get_cpi():
@@ -2746,8 +2761,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(payload)
         elif self.path == "/cpi-debug":
             try:
-                r = requests.get(_FRED_CPI_URL, timeout=20, headers={"User-Agent":"Mozilla/5.0"})
-                payload = json.dumps({"status": r.status_code, "source": "FRED", "body": r.text[:500]}).encode()
+                import json as _j
+                now_year = datetime.now().year
+                pl = {"seriesid": ["CUSR0000SA0"], "startyear": str(now_year-1), "endyear": str(now_year)}
+                if _BLS_KEY: pl["registrationkey"] = _BLS_KEY
+                r = requests.post(_BLS_CPI_URL, json=pl, timeout=20, headers={"Content-Type":"application/json"})
+                payload = json.dumps({"status": r.status_code, "source": "BLS", "body": r.text[:800]}).encode()
             except Exception as e:
                 payload = json.dumps({"error": str(e)}).encode()
             self.send_response(200)
